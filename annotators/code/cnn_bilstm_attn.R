@@ -2,7 +2,17 @@
 source('annotator_prep_functions.R')
 annotator_style <- 2
 lead <- 1
-out <- prep_ludb(lead = lead, annotator_style = annotator_style)
+rounds <- 1
+max_noise = 0.05
+dilate_range <- c(0.03,0.05)
+filter <- TRUE
+
+out <- prep_ludb(lead = lead, 
+                 annotator_style = annotator_style,
+                 filter = filter,
+                 dilate_range = dilate_range,
+                 max_noise = max_noise,
+                 rounds = rounds)
 
 #         1: 1 0 0 0 1 0 0 0 2 0 0 2 ...
 #         2: 1 1 1 1 1 0 0 0 2 2 2 2 ...
@@ -17,9 +27,9 @@ testing_annotations <- out$testing_annotations
 library(keras)
 remove(cnn_bilstm_attn_model)
 
-dropout <- 0.3
+dropout <- 0.2
 bilstm_layers <- 64 # original: 64
-mask_value <- 0
+mask_value <- out$mask_value
 
 model_type <- 'CBA' # ie: cnn_bilstm_attn
 
@@ -52,7 +62,7 @@ bilstm_block <-
 # Self Attention Block
 attn_block <-
   bilstm_block |>
-  layer_dense(units = 1, activation = "tanh") |>
+  layer_dense(units = 1, activation = "softmax") |> # tanh
   layer_flatten() |>
   layer_activation("softmax") |>
   layer_repeat_vector(bilstm_layers*2) |>
@@ -63,7 +73,8 @@ mult_attn_block <- layer_multiply(list(bilstm_block, attn_block))
 # Time Distributed Dense Layer
 outputs <-
   mult_attn_block |>
-  time_distributed(layer_dense(units = num_classes, activation = "sigmoid"))
+  time_distributed(layer_dense(units = num_classes, 
+                               activation = "softmax")) # sigmoid
 
 # Create and compile the model
 cnn_bilstm_attn_model <- keras_model(inputs = inputs, outputs = outputs)
@@ -79,7 +90,7 @@ cnn_bilstm_attn_model |> compile(
 
 
 # Train model -------------------------------------------------------------
-epochs <- 5
+epochs <- 50
 
 # Print to command line
 cat("model_type:", model_type, "\n",
@@ -87,7 +98,11 @@ cat("model_type:", model_type, "\n",
     "bilstm_layers:", bilstm_layers, "\n",
     "epochs:", epochs, "\n",
     "dropout:", dropout, "\n",
-    "annotator_style:", annotator_style, "\n")
+    "rounds:", rounds, "\n",
+    "max_noise:", max_noise, "\n",
+    "dilate_range:", dilate_range, "\n",
+    "annotator_style:", annotator_style, "\n",
+    "noramlize:", normalize, "\n")
 
 start <- Sys.time()
 history <- cnn_bilstm_attn_model |> fit(training_signal, training_annotations, 
@@ -97,11 +112,12 @@ history <- cnn_bilstm_attn_model |> fit(training_signal, training_annotations,
                                         # loss_weights = c(0.1, 1, 1, 1), # experimenting with decreasing the weight of '0' annotations (ie no wave)
                                         verbose = 2)
 
-# output_name <- paste0("../models/",model_name)
-# save_model_tf(model, output_name)
+output_name <- paste0("../models/",model_name)
+save_model_tf(model, output_name)
 
 end <- Sys.time()
 time_spent <- end-start
+cat("time_spent:", time_spent, "\n")
 
 # Test model --------------------------------------------------------------
 # input_filtered <- filter_samples()
@@ -146,7 +162,12 @@ new_row <- data.frame(
   epochs = epochs,
   time = round(time_spent, 2),
   training_samples = I(list(out$training_samples)),
-  confusion = I(list(confusion))
+  confusion = I(list(confusion)),
+  dilate_range = I(list(dilate_range)),
+  max_noise = max_noise,
+  rounds = rounds,
+  filter = filter,
+  normalize = out$normalize
 )
 
 model_log <- rbind(model_log, new_row)

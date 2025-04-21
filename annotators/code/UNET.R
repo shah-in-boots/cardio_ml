@@ -2,6 +2,11 @@
 source('annotator_prep_functions.R')
 annotator_style <- 2
 lead <- 1
+rounds <- 3
+max_noise = 0.05
+dilate_range <- c(0.03,0.05)
+filter <- TRUE
+
 out <- prep_ludb(lead = lead, annotator_style = annotator_style)
 
 #         1: 1 0 0 0 1 0 0 0 2 0 0 2 ...
@@ -117,7 +122,11 @@ cat("model_type:", model_type, "\n",
     "filters:", filters, "\n",
     "epochs:", epochs, "\n",
     "dropout:", dropout, "\n",
-    "annotator_style:", annotator_style, "\n")
+    "rounds:", rounds, "\n",
+    "max_noise:", max_noise, "\n",
+    "dilate_range:", dilate_range, "\n",
+    "annotator_style:", annotator_style, "\n",
+    "noramlize:", normalize, "\n")
 
 
 start <- Sys.time()
@@ -134,6 +143,7 @@ history <- model |> fit(
 
 end <- Sys.time()
 time_spent <- end-start
+cat("time_spent:", time_spent, "\n")
 
 # output_name <- paste0("../models/",model_name)
 # save_model_tf(model, output_name)
@@ -174,7 +184,12 @@ new_row <- data.frame(
   epochs = epochs,
   time = round(time_spent, 2),
   training_samples = I(list(out$training_samples)),
-  confusion = I(list(confusion))
+  confusion = I(list(confusion)),
+  dilate_range = I(list(dilate_range)),
+  max_noise = max_noise,
+  rounds = rounds,
+  filter = filter,
+  normalize = out$normalize
 )
 
 model_log <- rbind(model_log, new_row)

@@ -18,3 +18,11 @@ truth_plot <- plot_func(ecg_voltage,ann_wfdb2continuous2(testing_annotations[[sa
 predicted_plot <- plot_func(noisy_ecg,ann_wfdb2continuous2(testing_annotations[[sample]]))
 filtered_plot <- plot_func(ecg_filter(noisy_ecg),ann_wfdb2continuous2(testing_annotations[[sample]]))
 subplot(truth_plot,predicted_plot,filtered_plot,nrows = 3)
+
+
+# plot2 -------------------------------------------------------------------
+
+truth_plot <- plot_func(out$training_signal[1,],out$training_annotations[1,])
+predicted_plot <- plot_func(out$training_signal[141,],out$training_annotations[141,])
+predicted_plot2 <- plot_func(out$training_signal[281,],out$training_annotations[281,])
+subplot(truth_plot,predicted_plot,predicted_plot2,nrows = 3)

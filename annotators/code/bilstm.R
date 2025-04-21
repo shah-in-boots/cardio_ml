@@ -2,9 +2,19 @@
 source('annotator_prep_functions.R')
 annotator_style <- 2
 lead <- 1
-rounds <- 3
+rounds <- 1
+max_noise = 0 # 0.05, 0.03
+dilate_range <- c(0.03,0.05)
+filter <- TRUE
+epochs <- 20
+bilstm_layers <- 200 # original: 200
 
-out <- prep_ludb(lead = lead, annotator_style = 2, rounds = rounds)
+out <- prep_ludb(lead = lead, 
+                 annotator_style = 2, 
+                 rounds = rounds,
+                 max_noise = max_noise,
+                 dilate_range = dilate_range,
+                 filter = filter)
 #         1: 1 0 0 0 1 0 0 0 2 0 0 2 ...
 #         2: 1 1 1 1 1 0 0 0 2 2 2 2 ...
 #         3: 1 2 2 2 3 0 0 0 4 5 5 6 ...
@@ -18,9 +28,8 @@ testing_annotations <- out$testing_annotations
 
 # Build Model -------------------------------------------------------------------
 library(keras)
-bilstm_layers <- 200 # original: 200
 activation <- 'softmax' #'sigmoid': old version
-mask_value <- 0
+mask_value <- out$mask_value
 model_type <- 'bilstm'
 
 date_time <- format(Sys.time(), "%Y%m%d_%H%M%S")
@@ -42,22 +51,25 @@ model <- keras_model(inputs = inputs, outputs = outputs, name = 'mdl')
 
 model |>
   compile(
-    # optimizer = 'adam',
-    optimizer = 'rmsprop',
+    optimizer = 'adam',
+    # optimizer = 'rmsprop',
     loss = 'sparse_categorical_crossentropy',
     metrics = 'accuracy'
   )
 
 # Train model -------------------------------------------------------------
-epochs <- 20
-
 # Print to command line:
 cat("model_type:", model_type, "\n",
     "model_name:", model_name, "\n",
     "bilstm_layers:", bilstm_layers, "\n",
     "epochs:", epochs, "\n",
     "activation:", activation, "\n",
-    "annotator_style:", annotator_style, "\n")
+    "rounds:", rounds, "\n",
+    "max_noise:", max_noise, "\n",
+    "dilate_range:", dilate_range, "\n",
+    "annotator_style:", annotator_style, "\n",
+    "filter:", filter, "\n",
+    "noramlize:", normalize, "\n")
 
 # Train
 start <- Sys.time()
@@ -71,7 +83,7 @@ save_model_tf(model, output_name)
 
 end <- Sys.time()
 time_spent <- end-start
-
+cat("time_spent:", time_spent, "\n")
 # bilstm: bilstm_layers, activation
 # cnn_bilstm_attn: dropout, bilstm_layers
 # UNET: dropout, filters
@@ -118,7 +130,12 @@ new_row <- data.frame(
   epochs = epochs,
   time = round(time_spent, 2),
   training_samples = I(list(out$training_samples)),
-  confusion = I(list(confusion))
+  confusion = I(list(confusion)),
+  dilate_range = I(list(dilate_range)),
+  max_noise = max_noise,
+  rounds = rounds,
+  filter = filter,
+  normalize = out$normalize
 )
 
 model_log <- rbind(model_log, new_row)

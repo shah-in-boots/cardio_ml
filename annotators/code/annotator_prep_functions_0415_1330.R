@@ -2,30 +2,14 @@
 #' @descrption Input: custom list of LUDB annotations and signal. Splits into training/testing. 
 #' Takes random continuous segment between 2 and 8 seconds, zeros the rest. Randomly shifts the segment across the vector
 #' Then normalizes the signal for each sample.
-#' 
-#' @param dilate_range For training set: 2 element vector. Defines the range the samples will be randomly. c(0.03,0.05) = 3 to 5%
-#' 
-#' @param max_noise For training set: maximum standard deviation of the added Gaussian noise. ECGs are scaled from 0 to 1. 
-#' 
-#' @param rounds number of times the training dataset will be duplicated. Note: a value of 2 will double the length of the training set. A value of 1 will not change the length
 prep_ludb <- function(lead,
                       annotator_style = 2,
-                      split = 0.7,
-                      dilate_range = c(0.03,0.05),
-                      max_noise = 0.05,
-                      rounds = 1,
-                      filter,
-                      mask_value = -1,
-                      normalize = FALSE) {
-  library(stats)
-  library(signal)
-  
+                      split = 0.7) {
   # Load LUDB set
   load('../ludb_set.RData')
   
   # Assign the annotation style for ML input:
   use_func <- paste0('ann_wfdb2continuous', annotator_style)
-  
   #         ann_wfdb2continuous1: 1 0 0 0 1 0 0 0 2 0 0 2 ...
   #         ann_wfdb2continuous2: 1 1 1 1 1 0 0 0 2 2 2 2 ...
   #         ann_wfdb2continuous3: 1 2 2 2 3 0 0 0 4 5 5 6 ...
@@ -49,8 +33,8 @@ prep_ludb <- function(lead,
   training_set <- ludb_set[c(training_samples)]
   testing_set <- ludb_set[c(testing_samples)]
   
-  training_signal      <- array(NA, c(length(training_set)*rounds, length))
-  training_annotations <- array(NA, c(length(training_set)*rounds, length))
+  training_signal      <- array(NA, c(length(training_set), length))
+  training_annotations <- array(NA, c(length(training_set), length))
   testing_signal       <- array(NA, c(length(testing_set), length))
   testing_annotations  <- array(NA, c(length(testing_set), length))
   
@@ -61,92 +45,49 @@ prep_ludb <- function(lead,
   
   
   # Training Set
-  for (round in 1:rounds) {
-    for (sample in 1:length(training_set)) {
-      # **Take a random 4 second interval of signal**:
-      
-      # Randomly select the starting point for the 4 second interval
-      random_start <- sample(start_index:(end_index - interval_length), 1)
-      # Define the 4-second interval
-      random_interval <- random_start:(random_start + interval_length - 1)
-      
-      signal <- training_set[[sample]]$signal[[leads[lead]]]
-      ann <- annotation_function(training_set[[sample]]$annotation[[leads[lead]]])
-      
-      if (filter) {
-        signal <- ecg_filter(signal = signal)
-      }
-      
-      # Set indices outside of interval to 0
-      # signal[-random_interval] <- 0
-      # ann[-random_interval] <- 0
-      
-      # Random interval signal/ann vectors
-      signal_iso <- signal[random_interval]
-      ann_iso <- ann[random_interval]
-      
-      
-      # Compress signal:
-      # Generate a random compression/dilation factor
-      
-      if (round != 1) {
-        compression_factor <- 1 + sample(c(-1, 1), size = 1) * runif(1, min = dilate_range[1], max = dilate_range[2]) # Random factor between 1 +/- (3 to 5)%
-        new_length <- round(length(signal_iso) * compression_factor) # Define new length for the signal based on compression/dilation factor
-        # Resample the ECG signal to the new length
-        compressed_signal <- resample(signal_iso, p = new_length, q = length(signal_iso))
-        # Cannot use same interpolation to do ann vector, which contains *integers* (not decimals). ie, must ensure termini of QRS, T don't become 1s or 2s if rounding
-        new_indices <- seq(from = 1,
-                           to = length(ann_iso),
-                           length.out = new_length) # Create new indices from 1 to length(ann_iso) with the new length
-        compressed_ann <- ann_iso[round(new_indices)] # For each new index, use the nearest original annotation
-      } else {
-        # if on the 1st round, do not dilate/compress, or add noise
-        compressed_signal <- signal_iso
-        compressed_ann <- ann_iso
-        new_length <- length(compressed_signal)
-      }
-      
-      
-      
-      
-      # Generate Gaussian random noise
-      # Compress signal:
-      # Generate a random compression/dilation factor
-      if (round != 1) {
-        # if on the 1st round, do not dilate/compress, or add noise
-        sigma <- runif(1, min = 0, max = max_noise) # vary the noise SD from 0 to max_noise parameter
-        noise <- rnorm(length(compressed_signal),
-                       mean = 0,
-                       sd = sigma) # create random noise
-        compressed_signal <- compressed_signal + noise # Add the noise to the original ECG signal
-      } 
-      
-      # Normalize signal: RECOMMEND KEEPING THIS TURNED OFF
-      if (normalize) {
-        compressed_signal <- (compressed_signal - min(compressed_signal)) / (max(compressed_signal) - min(compressed_signal))
-      }
-      
-      # Now, randomly place the random signal/ann interval:
-      # Determine a random starting point for the shifted interval
-      vector_length <- length(signal)
-      shifted_start <- sample(1:(vector_length - new_length), 1)
-      
-      # Generate the new shifted indices
-      shifted_indices <- shifted_start:(shifted_start + new_length - 1)
-      
-      # Create new vectors initialized with zeros
-      shifted_signal <- rep(mask_value, vector_length)
-      shifted_ann <- rep(0, vector_length)
-      
-      # Shift the non-zero values to the new interval
-      shifted_signal[shifted_indices] <- compressed_signal
-      shifted_ann[shifted_indices] <- compressed_ann
-      
-      # Add sample to matrix
-      index <- sample + (round-1)*length(training_set)
-      training_signal[index, ] <- shifted_signal # signal
-      training_annotations[index, ] <- shifted_ann # ann
-    }
+  for (sample in 1:length(training_set)) {
+    # **Take a random 4 second interval of signal**:
+    
+    # Randomly select the starting point for the 4 second interval
+    random_start <- sample(start_index:(end_index - interval_length), 1)
+    # Define the 4-second interval
+    random_interval <- random_start:(random_start + interval_length - 1)
+    
+    signal <- training_set[[sample]]$signal[[leads[lead]]]
+    ann <- annotation_function(training_set[[sample]]$annotation[[leads[lead]]])
+    
+    # Filter signal:
+    signal <- ecg_filter(signal = signal)
+    
+    # Normalize signal
+    (signal - min(signal)) / (max(signal) - min(signal))
+    
+    # Set indices outside of interval to 0
+    signal[-random_interval] <- 0
+    ann[-random_interval] <- 0
+    
+    
+    
+    # **Now, randomly shift the non zero signal/ann values**:
+    
+    # Determine a random starting point for the shifted interval
+    vector_length <- length(signal)
+    shifted_start <- sample(1:(vector_length - length(random_interval)), 1)
+    
+    # Generate the new shifted indices
+    shifted_indices <- shifted_start:(shifted_start + length(random_interval) - 1)
+    
+    # Create new vectors initialized with zeros
+    shifted_signal <- rep(0, vector_length)
+    shifted_ann <- rep(0, vector_length)
+    
+    # Shift the non-zero values to the new interval
+    shifted_signal[shifted_indices] <- signal[random_interval]
+    shifted_ann[shifted_indices] <- ann[random_interval]
+    
+    # Add sample to matrix
+    training_signal[sample, ] <- shifted_signal # signal
+    training_annotations[sample, ] <- shifted_ann # ann
   }
   
   # Testing Set (no need to select a random interval)
@@ -158,12 +99,10 @@ prep_ludb <- function(lead,
     signal <- ecg_filter(signal = signal)
     
     # Normalize signal
-    if (normalize) {
-      signal <- (signal - min(signal)) / (max(signal) - min(signal))
-    }
+    (signal - min(signal)) / (max(signal) - min(signal))
     
     # Set values of first and last 1000 indices to 0 (could also do 1st and last annotated indices)
-    signal[c(1:1000, 4001:5000)] <- mask_value
+    signal[c(1:1000, 4001:5000)] <- 0
     ann[c(1:1000, 4001:5000)] <- 0
     
     # Add sample to matrix
@@ -171,16 +110,21 @@ prep_ludb <- function(lead,
     testing_annotations[sample, ] <- ann
   }
   
-  # Prepare output
+  # Normalize set:
+  # training_signal <- t(apply(training_signal, 1, function(ecg) {
+  #   (ecg - min(ecg)) / (max(ecg) - min(ecg))
+  # }))
+  # testing_signal <- t(apply(testing_signal, 1, function(ecg) {
+  #   (ecg - min(ecg)) / (max(ecg) - min(ecg))
+  # }))
+  
   output <- list(
     training_signal = training_signal,
     training_annotations = training_annotations,
     testing_signal = testing_signal,
     testing_annotations = testing_annotations,
     training_samples = training_samples,
-    testing_samples = testing_samples,
-    mask_value = mask_value,
-    normalize = normalize
+    testing_samples = testing_samples
   )
   
   return(output)
