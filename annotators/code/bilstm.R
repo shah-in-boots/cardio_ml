@@ -2,8 +2,8 @@
 source('annotator_prep_functions.R')
 annotator_style <- 2
 lead <- 1
-rounds <- 1
-max_noise = 0 # 0.05, 0.03
+rounds <- 3
+max_noise = 0.03 # 0.05, 0.03
 dilate_range <- c(0.03,0.05)
 filter <- TRUE
 epochs <- 20
@@ -69,7 +69,7 @@ cat("model_type:", model_type, "\n",
     "dilate_range:", dilate_range, "\n",
     "annotator_style:", annotator_style, "\n",
     "filter:", filter, "\n",
-    "noramlize:", normalize, "\n")
+    "noramlize:", out$normalize, "\n")
 
 # Train
 start <- Sys.time()
@@ -91,7 +91,7 @@ cat("time_spent:", time_spent, "\n")
 
 # Add to 
 
-# Test model --------------------------------------------------------------
+# Test model on testing LUDB samples--------------------------------------------------------------
 # input_filtered <- filter_samples()
 
 predictions <- model %>% predict(testing_signal)
@@ -105,9 +105,47 @@ for (i in 1: nrow(predictions)) {
 #convert from dimension value 1,2,3,4 to 0,1,2,3
 predictions_integer <- predictions_integer - 1
 
+# LUDB test sample Analysis
+confusion <- confusion_analysis(predictions = predictions_integer, actual = testing_annotations)
+wave_counter <- check_ann_prog_ludb_helper(predictions_integer = predictions_integer, testing_annotations = testing_annotations)
 
-# Analysis
-confusion <- confusion_analysis()
+
+# UIH test samples Analysis (nonlabelled) ---------------------------------
+load('../uih_ecgs.RData')
+uih_samples <- do.call(rbind,lapply(1:length(uih_ecgs), function(idx) uih_ecgs[[idx]]$signal[[lead+1]]))
+
+filtered <- array(0,dim(uih_samples))
+for (i in 1:nrow(uih_samples)) {
+  filtered[i,] <- ecg_filter(uih_samples[i,])
+}
+
+# Predict
+predictions <- model %>% predict(filtered)
+predictions_integer <- array(0,c(nrow(predictions),ncol(predictions))) 
+for (i in 1: nrow(predictions)) {
+  predictions_integer[i,] <- max.col(predictions[i,,])
+}
+#convert from dimension value 1,2,3,4 to 0,1,2,3
+predictions_integer <- predictions_integer - 1
+
+
+prog_count <- array(NA,nrow(predictions_integer))
+prog_count_revised <- array(NA,nrow(predictions_integer))
+
+predictions_integer_revised <- array(0,dim(predictions_integer))
+for (i in 1:nrow(predictions_integer)) {
+  predictions_integer_revised[i,] <- fill_wave_gaps(predictions_integer[i,],20)
+}
+
+for (i in 1:nrow(predictions_integer)) {
+  prog_count[i] <- check_ann_prog(annotation = predictions_integer[i,])
+  prog_count_revised[i] <- check_ann_prog(predictions_integer_revised[i,])
+}
+
+uih_prog <- sum(prog_count == 0) / length(prog_count)
+uih_prog_revised <- sum(prog_count_revised == 0) / length(prog_count_revised)
+
+confidence <- round(mean(apply(predictions, c(1, 2), max)),4)
 
 # Write to log ------------------------------------------------------------
 # Add lock to avoid overwriting
@@ -135,7 +173,11 @@ new_row <- data.frame(
   max_noise = max_noise,
   rounds = rounds,
   filter = filter,
-  normalize = out$normalize
+  wave_counter = I(list(wave_counter)),
+  normalize = out$normalize,
+  uih_prog = uih_prog,
+  uih_prog_revised = uih_prog_revised,
+  confidence = confidence
 )
 
 model_log <- rbind(model_log, new_row)

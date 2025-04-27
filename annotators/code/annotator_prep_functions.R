@@ -115,9 +115,10 @@ prep_ludb <- function(lead,
       if (round != 1) {
         # if on the 1st round, do not dilate/compress, or add noise
         sigma <- runif(1, min = 0, max = max_noise) # vary the noise SD from 0 to max_noise parameter
+        range <- range(compressed_signal)
         noise <- rnorm(length(compressed_signal),
                        mean = 0,
-                       sd = sigma) # create random noise
+                       sd = sigma * abs(range[1] - range[2])) # create random noise
         compressed_signal <- compressed_signal + noise # Add the noise to the original ECG signal
       } 
       
@@ -447,6 +448,10 @@ check_ann_prog_ludb <- function(predicted, ludb) {
     predicted <- ann_continuous2wfdb(predicted)
   }
   
+  if (class(ludb) == 'numeric') {
+    ludb <- ann_continuous2wfdb(ludb)
+  }
+  
   # To compare ground truths, remove predicted annotations prior to first LUDB annotation, after last LUDB annotation
   
   
@@ -548,6 +553,33 @@ check_ann_prog_ludb <- function(predicted, ludb) {
 
   return(points_df)
   
+}
+
+check_ann_prog_ludb_helper <- function(testing_annotations = testing_annotations, 
+                                       predictions_integer = predictions_integer) {
+  table <- c()
+  for (sample in 1:nrow(testing_annotations)) {
+    table <- rbind(table,check_ann_prog_ludb(ludb = testing_annotations[sample,], 
+                                               predicted = predictions_integer[sample,])) 
+  }
+  
+  samples_w_missed_wave <- data.frame(
+    p = round((sum(table$p_unpair) + sum(table$p_dupl)) / nrow(table), 3),
+    qrs = round((sum(table$qrs_unpair) + sum(table$qrs_dupl)) / nrow(table), 3),
+    t = round((sum(table$t_unpair) + sum(table$t_dupl)) / nrow(table), 3)
+  )
+  
+  missed_waves_per_sample <- data.frame(
+    p = round(length(which(table$p_unpair != 0 | table$p_dupl != 0)) / nrow(table), 3),
+    qrs = round(length(which(table$qrs_unpair != 0 |table$qrs_dupl != 0)) / nrow(table), 3),
+    t = round(length(which(table$t_unpair != 0 | table$t_dupl != 0)) / nrow(table), 3)
+  )
+  
+  
+  output <- list(samples_w_missed_wave, missed_waves_per_sample)
+  names(output) <- c('samples_w_missed_wave','missed_waves_per_sample')
+  print(output)
+  return(output)
 }
 
 check_ann_prog <- function(predicted, ludb) {
@@ -682,6 +714,67 @@ ann_continuous2wfdb <- function(annotations, Fs = 500) {
   row.names(annotation_table) <- NULL
   
   return(annotation_table)
+}
+
+
+
+# UIH relative analysis ---------------------------------------------------
+# ie- functions when we don't have an answer key
+
+# Check if waves go: P > QRS > T > P...
+check_ann_prog <- function(annotation) {
+  ann <- ann_continuous2wfdb(annotation)
+  
+  # Remove first and last 0.5s
+  ann <- ann[(ann$sample <= 4750) & (ann$sample >= 250),]
+  
+  progression <- ann$type[ann$type %in% c('p','N','t')]
+  
+  # Create logical checks
+  check_p <- which(progression == "p")  # Indices of "p"
+  check_N <- which(progression == "N")  # Indices of "N"
+  check_t <- which(progression == "t")  # Indices of "t"
+  
+  # Ensure "p" is followed by "N"
+  valid_pN <- all(progression[check_p[check_p < length(progression)] + 1] == "N")
+  
+  # Ensure "N" is followed by "t"
+  valid_Nt <- all(progression[check_N[check_N < length(progression)] + 1] == "t")
+  
+  # Ensure "t" is followed by "p"
+  valid_tp <- all(progression[check_t[check_t < length(progression)] + 1] == "p")
+  
+  # Final check
+  if (valid_pN & valid_Nt & valid_tp) {
+    # print("The progression follows the expected pattern.")
+    output <- 1
+  } else {
+    # print("The progression does NOT follow the expected pattern.")
+    output <- 0
+  }
+  return(output)
+}
+
+# If there are two waves of the same type (ie pwave) which are within 10 indicies,
+# and those indicies are labelled as 0 (non-waves), convert the 0s to pwave values
+fill_wave_gaps <- function(annotation = predictions_integer, max_gap = 10) {
+  # Find nonzero indices
+  nonzero_indices <- which(annotation != 0)
+  
+  # Iterate through the nonzero indices
+  for (i in seq_along(nonzero_indices)) {
+    if (i == length(nonzero_indices)) break  # Stop if at last index
+    
+    current_val <- annotation[nonzero_indices[i]]
+    next_idx <- nonzero_indices[i + 1]
+    
+    # Check if the next wave is of the same value and gap is ≤ max_gap
+    if (annotation[next_idx] == current_val && (next_idx - nonzero_indices[i] <= max_gap)) {
+      annotation[(nonzero_indices[i] + 1):(next_idx - 1)] <- current_val
+    }
+  }
+  
+  return(annotation)
 }
 
 
