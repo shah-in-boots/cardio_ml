@@ -6,13 +6,22 @@ source('annotator_prep_functions.R')
 load("/mmfs1/projects/cardio_darbar_chi/common/cohorts/wes_ml/annotator_models/uih_ecgs.RData")
 load('../models/model_log.RData')
 
-row <- 15
+row <- 12
 # for (row in 11:nrow(model_log)) {
 lead <- 1
 
 # Note: uih_ecgs dataset was generated via generate_uih_test_ecgs.R. Sinus ECGs only
 
 signal <- do.call(rbind,lapply(1:length(uih_ecgs), function(idx) uih_ecgs[[idx]]$signal[[lead+1]]))
+
+# for LOCAL testing only. Suppress/delete when on cluster:
+dir <- '../../AF_DM/wfdb/matched_controls/'
+testfiles <- file_path_sans_ext(list.files(path = dir, pattern = '.hea')[1:100])
+signal <- do.call(rbind, lapply(testfiles, function(file) {
+  read_signal(record = file, record_dir = dir)$I
+}))
+# ---
+
 
 model <- load_model_tf(paste0('../models/',model_log$name[row]))
 
@@ -22,34 +31,33 @@ for (i in 1:nrow(signal)) {
 }
 
 # Predict
-predictions <- model %>% predict(filtered)
-predictions_integer <- array(0,c(nrow(predictions),ncol(predictions))) 
-for (i in 1: nrow(predictions)) {
-  predictions_integer[i,] <- max.col(predictions[i,,])
+uih_predictions <- model %>% predict(filtered)
+uih_predictions_integer <- array(0,c(nrow(uih_predictions),ncol(uih_predictions))) 
+for (i in 1: nrow(uih_predictions)) {
+  uih_predictions_integer[i,] <- max.col(uih_predictions[i,,])
 }
 #convert from dimension value 1,2,3,4 to 0,1,2,3
-predictions_integer <- predictions_integer - 1
+uih_predictions_integer <- uih_predictions_integer - 1
 
 
 # Stats -------------------------------------------------------------------
-prog_count <- array(NA,nrow(predictions_integer))
-prog_count_revised <- array(NA,nrow(predictions_integer))
+prog_count <- array(NA,nrow(uih_predictions_integer))
+prog_count_revised <- array(NA,nrow(uih_predictions_integer))
 
-predictions_integer_revised <- array(0,dim(predictions_integer))
-for (i in 1:nrow(predictions_integer)) {
-  predictions_integer_revised[i,] <- fill_wave_gaps(predictions_integer[i,],20)
+uih_predictions_integer_revised <- array(0,dim(uih_predictions_integer))
+for (i in 1:nrow(uih_predictions_integer)) {
+  uih_predictions_integer_revised[i,] <- fill_wave_gaps(uih_predictions_integer[i,],20)
 }
 
-for (i in 1:nrow(predictions_integer)) {
-  prog_count[i] <- check_ann_prog(annotation = predictions_integer[i,])
-  prog_count_revised[i] <- check_ann_prog(predictions_integer_revised[i,])
+for (i in 1:nrow(uih_predictions_integer)) {
+  prog_count[i] <- check_ann_prog(annotation = uih_predictions_integer[i,])
+  prog_count_revised[i] <- check_ann_prog(uih_predictions_integer_revised[i,])
 }
 
-fraction <- sum(prog_count == 0) / length(prog_count)
-revised_fraction <- sum(prog_count_revised == 0) / length(prog_count_revised)
+uih_prog <- sum(prog_count == 0) / length(prog_count)
+uih_prog_revised <- sum(prog_count_revised == 0) / length(prog_count_revised)
 
-# Find the average probability of each time point
-confidence <- round(mean(apply(predictions, c(1, 2), max)),4)
+confidence <- round(mean(apply(uih_predictions, c(1, 2), max)),4)
 
 # model_log$confidence[row] <- confidence
 # model_log$uih_prog[row] <- fraction
@@ -59,30 +67,39 @@ confidence <- round(mean(apply(predictions, c(1, 2), max)),4)
 
 
 # Compare to detect_QRS() -------------------------------------------------
+library(dplyr)
 library(EGM)
-idx <- 1
 # For a given sample
 
-for (idx in 1:nrow(signal)) {
-  
-  Rpeaks <- EGM::detect_QRS(ecg_filter(signal[idx, ]), frequency = 500)
-  # Convert predictions_integer sample to wfdb format
-  # Remove annotations and Rpeaks which occur <250 and >4750
-  
-  # Match Rpeaks which fall within the ML QRS interval. Check for duplicates / unmatched
-  
-  # Of the Rpeaks, check for adjacent P and T waves
-  
-  
-  # For pwaves:
-  #   Is there a pwave prior to the R peak (within tolerance)
-  #     What is the PR interval of that wave
-}
 
-# idx <- idx+1
-annotations <- array(0,5000)
-annotations[EGM::detect_QRS(ecg_filter(signal[idx,]), frequency = 500)] <- 1 
-plot_func(ecg_filter(signal[idx,]),annotations)
+uih_progression <- do.call(rbind,lapply(1:nrow(signal), function(idx) {
+  round(check_ann_prog_RPeaks(signal[idx,], uih_predictions_integer[idx,]),2)
+}))
+
+uih_Rpeaks <- do.call(rbind,lapply(1:nrow(signal), function(idx) {
+  round(check_ann_prog_RPeaks(signal[idx,], uih_predictions_integer[idx,]),2)
+}))
+
+Rpeaks_prog <- data.frame(
+  QRS = sum(uih_Rpeaks$missed_QRS + uih_Rpeaks$duplicate_QRS)/nrow(uih_Rpeaks),
+  P = sum(uih_Rpeaks$missed_P + uih_Rpeaks$duplicate_P)/nrow(uih_Rpeaks),
+  T = sum(uih_Rpeaks$missed_T + uih_Rpeaks$duplicate_T)/nrow(uih_Rpeaks)
+)
+
+model_log$Rpeaks_prog_P[row] = Rpeaks_prog$P
+model_log$Rpeaks_prog_QRS[row] = Rpeaks_prog$QRS
+model_log$Rpeaks_prog_T[row] = Rpeaks_prog$T
+model_log$Rpeaks_prot_total[row] = sum(Rpeaks_prog)
+
+# idx <- 92
+# ann_plot <- uih_predictions_integer_revised[idx,]
+# Rpeaks <- detect_QRS(signal[idx,],500)
+# ann_plot[Rpeaks] <- 4
+# plot_func(signal[idx,],ann_plot)
+# ann_continuous2wfdb(uih_predictions_integer_revised[idx,])
+
+
+# UIH  ----------------------------------------------------------------
 
 
 # plot --------------------------------------------------------------------

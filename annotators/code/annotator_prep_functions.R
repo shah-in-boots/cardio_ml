@@ -415,7 +415,7 @@ confusion_analysis <- function(predictions = predictions_integer,
 }
 
 
-# Further analysis --------------------------------------------------------
+# LUDB wave analysis --------------------------------------------------------
 
 # Count number of P, QRS, T waves in each sample, cross compare
 # Output: which samples / number of samples which do not have the right number of waves
@@ -710,6 +710,8 @@ ann_continuous2wfdb <- function(annotations, Fs = 500) {
     channel = channel,
     number = number)
   
+  class(annotation_table) <- c('data.frame','annotation_table')
+  
   annotation_table <- annotation_table[order(annotation_table$sample),]
   row.names(annotation_table) <- NULL
   
@@ -777,7 +779,172 @@ fill_wave_gaps <- function(annotation = predictions_integer, max_gap = 10) {
   return(annotation)
 }
 
-
+check_ann_prog_RPeaks <- function(signal,
+                                  predictions_integer, 
+                                  pr_tolerance = 200,
+                                  rt_tolerance = 170,
+                                  terminal_boundary = 250
+) {
+  # pr_tolerance <- 0.2 * 500 * 2 # 0.2 sec, fudge factor of 100%
+  # rt_tolerance <- 0.170 * 500 * 2 # ST: 0.120 sec, RS: ~0.05 sec, fudge factor of 100%
+  
+  Rpeaks_lower_bound <- terminal_boundary
+  Rpeaks_upper_bound <- 5000 - terminal_boundary
+  
+  # Convert predictions_integer sample to wfdb format
+  ann <- ann_continuous2wfdb(predictions_integer)
+  sig <- signal
+  
+  ## Identify and match QRS: ##
+  
+  Rpeaks <- EGM::detect_QRS(ecg_filter(sig), frequency = 500)
+  # Remove Rpeaks if they are too close to the beginning/end
+  Rpeaks <- Rpeaks[Rpeaks > Rpeaks_lower_bound &
+                     Rpeaks < Rpeaks_upper_bound]
+  
+  # Find wave indicies/onsets/offsets
+  QRS_wave_indices <- which(ann$type == "N")
+  QRS_wave_onsets <- ann$sample[QRS_wave_indices - 1]
+  QRS_wave_offsets <- ann$sample[QRS_wave_indices + 1]
+  p_indices <- which(ann$type == "p")
+  p_wave_onsets <- ann$sample[p_indices - 1]
+  t_indices <- which(ann$type == "t")
+  t_wave_onsets <- ann$sample[t_indices - 1]
+  
+  # If QRS onset is <250, offset > 4750, remove
+  if (any(QRS_wave_onsets < Rpeaks_lower_bound)) {
+    logic <- QRS_wave_onsets < Rpeaks_lower_bound
+    QRS_wave_onsets <- QRS_wave_onsets[!logic]
+    QRS_wave_offsets <- QRS_wave_offsets[!logic]
+  }
+  if (any(QRS_wave_offsets > Rpeaks_upper_bound)) {
+    logic <- QRS_wave_offsets > Rpeaks_upper_bound
+    QRS_wave_onsets <- QRS_wave_onsets[!logic]
+    QRS_wave_offsets <- QRS_wave_offsets[!logic]
+  }
+  
+  matched_Rpeaks <- list()
+  unmatched_Rpeaks <- Rpeaks  # Start with all Rpeaks, remove matched ones later
+  unmatched_QRS_waves <- data.frame(onset = integer(), offset = integer())
+  
+  # Find the matched/unmatched QRS/Rpeaks
+  for (i in seq_along(QRS_wave_onsets)) {
+    # Find Rpeaks within onset/offset range
+    contained <- Rpeaks[Rpeaks >= QRS_wave_onsets[i] &
+                          Rpeaks <= QRS_wave_offsets[i]]
+    
+    if (length(contained) > 0) {
+      matched_Rpeaks[[i]] <- contained
+      unmatched_Rpeaks <- setdiff(unmatched_Rpeaks, contained)  # Remove matched Rpeaks
+    } else {
+      unmatched_QRS_waves <- rbind(
+        unmatched_QRS_waves,
+        data.frame(onset = QRS_wave_onsets[i], offset = QRS_wave_offsets[i])
+      )
+    }
+  }
+  
+  # matched_waves <- data.frame(Rpeaks = unlist(matched_Rpeaks))
+  matched_waves <- data.frame(Rpeaks = unlist(Rpeaks))
+  matched_waves$p <- NA
+  matched_waves$t <- NA
+  
+  # Find missed pwaves, twaves
+  
+  for (i in seq_along(matched_waves$Rpeaks)) {
+    peak <- matched_waves$Rpeaks[i]
+    
+    # Check for P-wave onset within pr_tolerance
+    p_match <- p_wave_onsets[p_wave_onsets >= (peak - pr_tolerance) &
+                               p_wave_onsets < peak]
+    
+    # If there are multiple matches, pick the closest one
+    if (length(p_match >= 1)) {
+      matched_waves$p[i] <- max(p_match)
+    }
+    
+    # Check for T-wave onset within rt_tolerance
+    t_match <- t_wave_onsets[t_wave_onsets <= (peak + rt_tolerance) &
+                               t_wave_onsets > peak]
+    
+    # If there are multiple matches, pick the closest one
+    if (length(t_match >= 1)) {
+      matched_waves$t[i] <- min(t_match)
+    }
+  }
+  
+  # Find duplicated pwaves, twaves
+  duplicate_pwaves <- c()
+  duplicate_twaves <- c()
+  
+  for (i in seq_along(matched_waves$Rpeaks)) {
+    if (i > 1) {
+      # Skip first peak
+      prev_peak <- matched_waves$Rpeaks[i - 1]
+      curr_peak <- matched_waves$Rpeaks[i]
+      pwaves <- p_wave_onsets[p_wave_onsets > prev_peak &
+                                p_wave_onsets < curr_peak]
+      
+      if (length(pwaves) > 1) {
+        unmatched_p <- setdiff(pwaves, matched_waves$p[i])
+        duplicate_pwaves <- c(duplicate_pwaves, unmatched_p)
+      }
+    }
+    
+    if (i < nrow(matched_waves)) {
+      # Skip last peak
+      curr_peak <- matched_waves$Rpeaks[i]
+      next_peak <- matched_waves$Rpeaks[i + 1]
+      twaves <- t_wave_onsets[t_wave_onsets > curr_peak &
+                                t_wave_onsets < next_peak]
+      
+      if (length(twaves) > 1) {
+        unmatched_t <- setdiff(twaves, matched_waves$t[i])
+        duplicate_twaves <- c(duplicate_twaves, unmatched_t)
+      }
+    }
+  }
+  
+  output <- data.frame(
+    missed_QRS = length(unmatched_Rpeaks) / nrow(matched_waves),
+    missed_P = sum(is.na(matched_waves$p)) / nrow(matched_waves),
+    missed_T = sum(is.na(matched_waves$t)) / nrow(matched_waves),
+    duplicate_QRS = nrow(unmatched_QRS_waves) / nrow(matched_waves),
+    duplicate_P = length(duplicate_pwaves) / nrow(matched_waves),
+    duplicate_T = length(duplicate_twaves) / nrow(matched_waves)
+  )
+  
+  return(output)
+  # print(unmatched_Rpeaks)
+  # print(unmatched_QRS_waves)
+  # print(duplicate_pwaves)
+  # print(duplicate_twaves)
+  # matched_waves
+  
+  # Pseudocode:  
+  # Need to adjust for waves which occur too close to beginning/end: 
+  #   eliminate Rpeaks if <250, >4750
+  #   there should be one labelled p-wave onset prior to  QRS (earliest: index ~150)
+  #     ignore waves prior to this p-wave
+  #   there should be one labelled t-wave onset after the QRS
+  #     ignore waves after this t-wave
+  
+  # For "normal" cases not at the beginning/end:
+  #   Check if there is p-wave before, t-wave after
+  #   Note if there are duplicates:
+  #     more than 1 p-wave before the prior QRS
+  #     more than 1 t-wave after  the QRS
+  #   Note if there are unmatched:
+  #     no p-wave prior to QRS
+  #     no t-wave after QRS
+  
+  # Toggle based on Rpeak- so it still looks for a p-wave even if QRS is missed, for example
+  
+  # Outputs:
+  #   % missed P, QRS, T
+  #   % duplicated P, QRS, T
+  
+}
 # Custom plotting function ------------------------------------------------
 plot_func <- function(y, 
                       color = 0,

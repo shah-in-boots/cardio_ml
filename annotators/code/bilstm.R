@@ -120,32 +120,56 @@ for (i in 1:nrow(uih_samples)) {
 }
 
 # Predict
-predictions <- model %>% predict(filtered)
-predictions_integer <- array(0,c(nrow(predictions),ncol(predictions))) 
-for (i in 1: nrow(predictions)) {
-  predictions_integer[i,] <- max.col(predictions[i,,])
+uih_predictions <- model %>% predict(filtered)
+uih_predictions_integer <- array(0,c(nrow(uih_predictions),ncol(uih_predictions))) 
+for (i in 1: nrow(uih_predictions)) {
+  uih_predictions_integer[i,] <- max.col(uih_predictions[i,,])
 }
 #convert from dimension value 1,2,3,4 to 0,1,2,3
-predictions_integer <- predictions_integer - 1
+uih_predictions_integer <- uih_predictions_integer - 1
 
 
-prog_count <- array(NA,nrow(predictions_integer))
-prog_count_revised <- array(NA,nrow(predictions_integer))
 
-predictions_integer_revised <- array(0,dim(predictions_integer))
-for (i in 1:nrow(predictions_integer)) {
-  predictions_integer_revised[i,] <- fill_wave_gaps(predictions_integer[i,],20)
+# Check P>QRS>T progression.
+#   prog_count_revised: fills in 2 p-waves with a gap of <20 indicies. Same for QRS, T
+prog_count <- array(NA,nrow(uih_predictions_integer))
+prog_count_revised <- array(NA,nrow(uih_predictions_integer))
+
+uih_predictions_integer_revised <- array(0,dim(uih_predictions_integer))
+for (i in 1:nrow(uih_predictions_integer)) {
+  uih_predictions_integer_revised[i,] <- fill_wave_gaps(uih_predictions_integer[i,],20)
 }
 
-for (i in 1:nrow(predictions_integer)) {
-  prog_count[i] <- check_ann_prog(annotation = predictions_integer[i,])
-  prog_count_revised[i] <- check_ann_prog(predictions_integer_revised[i,])
+for (i in 1:nrow(uih_predictions_integer)) {
+  prog_count[i] <- check_ann_prog(annotation = uih_predictions_integer[i,])
+  prog_count_revised[i] <- check_ann_prog(uih_predictions_integer_revised[i,])
 }
 
 uih_prog <- sum(prog_count == 0) / length(prog_count)
 uih_prog_revised <- sum(prog_count_revised == 0) / length(prog_count_revised)
 
-confidence <- round(mean(apply(predictions, c(1, 2), max)),4)
+
+
+# Confidence: average max probability value across all time points
+confidence <- round(mean(apply(uih_predictions, c(1, 2), max)),4)
+
+
+
+# Check wave progression using EGM::find_RPeaks()
+library(dplyr)
+uih_Rpeaks <- do.call(rbind,lapply(1:nrow(filtered), function(idx) {
+  round(check_ann_prog_RPeaks(filtered[idx,], uih_predictions_integer[idx,]),2)
+}))
+
+Rpeaks_prog <- data.frame(
+  QRS = sum(uih_Rpeaks$missed_QRS + uih_Rpeaks$duplicate_QRS)/nrow(uih_Rpeaks),
+  P = sum(uih_Rpeaks$missed_P + uih_Rpeaks$duplicate_P)/nrow(uih_Rpeaks),
+  T = sum(uih_Rpeaks$missed_T + uih_Rpeaks$duplicate_T)/nrow(uih_Rpeaks)
+)
+
+Rpeaks_prog$total <- sum(Rpeaks_prog)
+print(Rpeaks_prog)
+
 
 # Write to log ------------------------------------------------------------
 # Add lock to avoid overwriting
@@ -177,7 +201,11 @@ new_row <- data.frame(
   normalize = out$normalize,
   uih_prog = uih_prog,
   uih_prog_revised = uih_prog_revised,
-  confidence = confidence
+  confidence = confidence,
+  Rpeaks_prog_P = Rpeaks_prog$P,
+  Rpeaks_prog_QRS = Rpeaks_prog$QRS,
+  Rpeaks_prog_T = Rpeaks_prog$T,
+  Rpeaks_prog_total = Rpeaks_prog$total
 )
 
 model_log <- rbind(model_log, new_row)
