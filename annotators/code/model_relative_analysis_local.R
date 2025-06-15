@@ -12,7 +12,7 @@ testfiles <- file_path_sans_ext(list.files(path = dir, pattern = '.hea')[1:100])
 #   read_header(record = testfiles[i], record_dir = dir)
 # }
 
-row <- 14
+row <- 41
 lead <- 1
 
 model <- load_model_tf(paste0('../models/',model_log$name[row]))

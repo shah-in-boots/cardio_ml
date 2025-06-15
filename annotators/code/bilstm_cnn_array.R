@@ -1,13 +1,14 @@
 # Prep --------------------------------------------------------------------
+args <- commandArgs(trailingOnly = TRUE)
+
 source('annotator_prep_functions.R')
 annotator_style <- 2
-lead <- 1
+lead <- as.integer(args[1]) # assign each job to one lead. Lead order: c("i","ii","iii","avr","avl","avf","v1","v2","v3","v4","v5","v6"), as in LUDB set. Different than UIH
 rounds <- 4
 max_noise = 0.03 # 0.05, 0.03
 dilate_range <- c(0.03, 0.05)
 filter <- FALSE
-epochs <- 20
-epochs_to_save <- c(15, 20, 30, 40) # list which epochs you want to save
+epochs_to_save <- c(15,20,30) # list which epochs you want to save
 bilstm_layers <- 200 # original: 200
 normalize <- TRUE
 
@@ -20,9 +21,6 @@ out <- prep_ludb(
   filter = filter,
   normalize = normalize
 )
-#         1: 1 0 0 0 1 0 0 0 2 0 0 2 ...
-#         2: 1 1 1 1 1 0 0 0 2 2 2 2 ...
-#         3: 1 2 2 2 3 0 0 0 4 5 5 6 ...
 
 training_signal <- out$training_signal
 training_annotations <- out$training_annotations
@@ -33,12 +31,22 @@ testing_annotations <- out$testing_annotations
 
 # Build Model -------------------------------------------------------------------
 library(keras)
-activation <- 'softmax' #'sigmoid': old version
-mask_value <- out$mask_value
-model_type <- 'bilstm'
+library(tensorflow)
 
+# Model parameters
+input_length <- 5000          # number of time steps in the ECG
+num_channels <- 1             # single lead input
+units_lstm <- bilstm_layers   # LSTM units
+mask_value <- out$mask_value  # if you wish to mask zero values in the input
+activation <- "softmax"       # final activation for multi-class predictions
+model_type <- 'bilstm_cnn'
+kernel <- c(5,3)              # size of kernel for each convolutional layer
+filters <- c(32,64)           # number of filters for each convolutional layer
+
+# Build and name model
+epochs <- max(epochs_to_save)
+num_classes <- length(unique(as.vector(training_annotations))) # classes: no wave, P, QRS, T
 leads <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
-
 date_time <- format(Sys.time(), "%Y%m%d_%H%M%S")
 model_name_template <- paste0(model_type, '_', leads[lead], '_', date_time, '_epoch_')
 model_name_path <- paste0("../models/", model_name_template)
@@ -55,48 +63,73 @@ epoch_save_callback <- callback_lambda(
   }
 )
 
-# Build model
-num_classes <- length(unique(as.vector(training_annotations)))
-
-inputs <- layer_input(shape = c(5000, 1), dtype = 'float32') |>
+# Define the model input
+inputs <- layer_input(shape = c(input_length, num_channels), dtype = 'float32') |>
   layer_masking(mask_value = mask_value) # Masking input values equal to 0
 
-outputs <-
-  inputs |>
-  layer_normalization() |> # normalize layers
+# -- Convolutional Feature Extraction Block --
+# This block applies 1D convolutions to extract local features from the ECG slice.
+cnn_block <- inputs %>%
+  # First convolution: using a larger kernel can help capture the broader wave morphology.
+  layer_conv_1d(
+    filters = filters[1],
+    kernel_size = kernel[1],
+    activation = 'relu',
+    padding = "same"
+  ) %>%
+  # Max pooling to downsample and focus on the most prominent features.
+  layer_max_pooling_1d(pool_size = 2) %>%
+  # Second convolution: deeper features at a possibly finer resolution.
+  layer_conv_1d(
+    filters = filters[2],
+    kernel_size = kernel[2],
+    activation = 'relu',
+    padding = "same"
+  ) %>%
+  layer_max_pooling_1d(pool_size = 2)
+
+# -- Recurrent Block for Temporal Modeling --
+# The output of the convolutional block is still sequential.
+# The bidirectional LSTM helps capture signals from both past and future contexts.
+lstm_block <- cnn_block %>%
   bidirectional(layer_lstm(
-    units = bilstm_layers,
-    return_sequences = 'True',
+    units = units_lstm,
+    return_sequences = TRUE,  # important to output a sequence for per-time-step predictions
     activation = 'tanh'
-  )) |>
-  layer_dense(units = num_classes,
-              activation = activation,
-              name = 'predictions')
+  ))
 
-model <- keras_model(inputs = inputs,
-                     outputs = outputs,
-                     name = 'mdl')
+# -- Upsampling Layer --
+upsampled_block <- lstm_block %>%
+  layer_upsampling_1d(size = 4)  # Upsample by a factor of 2 to restore time steps
 
-model |>
-  compile(optimizer = 'adam',
-          # optimizer = 'rmsprop',
-          loss = 'sparse_categorical_crossentropy',
-          metrics = 'accuracy')
+# -- Output Layer --
+# A dense layer produces classification probabilities at every time step.
+outputs <- upsampled_block %>%
+  layer_dense(units = num_classes, activation = activation, name = "predictions")
+
+# Define, compile, and summarize the model
+model <- keras_model(inputs = inputs, outputs = outputs, name = "CNN_LSTM_ECG_Model")
+
+model %>% compile(
+  optimizer = optimizer_adam(),
+  loss = "sparse_categorical_crossentropy",
+  metrics = "accuracy"
+)
 
 # Train model -------------------------------------------------------------
 # Print to command line:
 cat("lead:",lead,'/',leads[lead],"\n",
-  "model_type:",model_type,"\n",
-  "model_name:",model_name_path,"\n",
-  "bilstm_layers:",bilstm_layers,"\n",
-  "epochs:",epochs,"\n",
-  "activation:",activation,"\n",
-  "rounds:",rounds,"\n",
-  "max_noise:",max_noise,"\n",
-  "dilate_range:",dilate_range,"\n",
-  "annotator_style:",annotator_style,"\n",
-  "filter:",filter,"\n",
-  "normalize:",out$normalize,"\n"
+    "model_type:",model_type,"\n",
+    "model_name:",model_name_path,"\n",
+    "bilstm_layers:",bilstm_layers,"\n",
+    "epochs:",epochs,"\n",
+    "activation:",activation,"\n",
+    "rounds:",rounds,"\n",
+    "max_noise:",max_noise,"\n",
+    "dilate_range:",dilate_range,"\n",
+    "annotator_style:",annotator_style,"\n",
+    "filter:",filter,"\n",
+    "normalize:",out$normalize,"\n"
 )
 
 # Train
@@ -236,6 +269,7 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
   }
   t_wave_length <- median(t_wave_lengths,na.rm = TRUE)
   
+  
   print(data.frame(
     name = model_name,
     type = model_type,
@@ -266,39 +300,39 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
   ))
   
   # Add new row for model_log
-new_row <- rbind(
-  new_row,
-  data.frame(
-    name = model_name,
-    type = model_type,
-    ann_style = annotator_style,
-    lead = lead,
-    bilstm_layers = bilstm_layers,
-    dropout = NA,
-    filters = NA,
-    epochs = epochs_to_save[checkpoint_number],
-    time = round(time_spent * (epochs_to_save[checkpoint_number] / epochs), 2),
-    training_samples = I(list(out$training_samples)),
-    confusion = I(list(confusion)),
-    dilate_range = I(list(dilate_range)),
-    max_noise = max_noise,
-    rounds = rounds,
-    filter = filter,
-    wave_counter = I(list(wave_counter)),
-    normalize = normalize,
-    uih_prog = uih_prog,
-    uih_prog_revised = uih_prog_revised,
-    confidence = confidence,
-    Rpeaks_prog_P = Rpeaks_prog_P,  # Ensure proper reference
-    Rpeaks_prog_QRS = Rpeaks_prog_QRS,
-    Rpeaks_prog_T = Rpeaks_prog_T,
-    Rpeaks_prog_total = Rpeaks_prog_total,
-    p_wave_length = p_wave_length,
-    t_wave_length = t_wave_length,
-    kernel = NA
+  new_row <- rbind(
+    new_row,
+    data.frame(
+      name = model_name,
+      type = model_type,
+      ann_style = annotator_style,
+      lead = lead,
+      bilstm_layers = bilstm_layers,
+      dropout = NA,
+      filters = I(list(filters)),
+      epochs = epochs_to_save[checkpoint_number],
+      time = round(time_spent * (epochs_to_save[checkpoint_number] / epochs), 2),
+      training_samples = I(list(out$training_samples)),
+      confusion = I(list(confusion)),
+      dilate_range = I(list(dilate_range)),
+      max_noise = max_noise,
+      rounds = rounds,
+      filter = filter,
+      wave_counter = I(list(wave_counter)),
+      normalize = normalize,
+      uih_prog = uih_prog,
+      uih_prog_revised = uih_prog_revised,
+      confidence = confidence,
+      Rpeaks_prog_P = Rpeaks_prog_P,  # Ensure proper reference
+      Rpeaks_prog_QRS = Rpeaks_prog_QRS,
+      Rpeaks_prog_T = Rpeaks_prog_T,
+      Rpeaks_prog_total = Rpeaks_prog_total,
+      p_wave_length = p_wave_length,
+      t_wave_length = t_wave_length,
+      kernel = I(list(kernel))
+    )
   )
-)
-
+  
 }
 
 print(new_row)

@@ -1,28 +1,24 @@
 # Prep --------------------------------------------------------------------
+args <- commandArgs(trailingOnly = TRUE)
+
 source('annotator_prep_functions.R')
 annotator_style <- 2
-lead <- 1
+lead <- as.integer(args[1]) # assign each job to one lead. Lead order: c("i","ii","iii","avr","avl","avf","v1","v2","v3","v4","v5","v6"), as in LUDB set. Different than UIH
 rounds <- 4
-max_noise = 0.03 # 0.05, 0.03
-dilate_range <- c(0.03, 0.05)
-filter <- FALSE
-epochs <- 20
-epochs_to_save <- c(15, 20, 30, 40) # list which epochs you want to save
+max_noise = 0.05 # 0.05, 0.03
+dilate_range <- c(0.03,0.05)
+filter <- TRUE
+epochs_to_save <- c(15,20,30,40) # list which epochs you want to save
 bilstm_layers <- 200 # original: 200
 normalize <- TRUE
 
-out <- prep_ludb(
-  lead = lead,
-  annotator_style = 2,
-  rounds = rounds,
-  max_noise = max_noise,
-  dilate_range = dilate_range,
-  filter = filter,
-  normalize = normalize
-)
-#         1: 1 0 0 0 1 0 0 0 2 0 0 2 ...
-#         2: 1 1 1 1 1 0 0 0 2 2 2 2 ...
-#         3: 1 2 2 2 3 0 0 0 4 5 5 6 ...
+out <- prep_ludb(lead = lead, 
+                 annotator_style = 2, 
+                 rounds = rounds,
+                 max_noise = max_noise,
+                 dilate_range = dilate_range,
+                 filter = filter,
+                 normalize = normalize)
 
 training_signal <- out$training_signal
 training_annotations <- out$training_annotations
@@ -32,22 +28,23 @@ testing_annotations <- out$testing_annotations
 
 
 # Build Model -------------------------------------------------------------------
+# Prep model
 library(keras)
 activation <- 'softmax' #'sigmoid': old version
 mask_value <- out$mask_value
 model_type <- 'bilstm'
+epochs <- max(epochs_to_save) # total number of epochs to train
 
 leads <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
 
 date_time <- format(Sys.time(), "%Y%m%d_%H%M%S")
-model_name_template <- paste0(model_type, '_', leads[lead], '_', date_time, '_epoch_')
-model_name_path <- paste0("../models/", model_name_template)
+model_name_template <- paste0(model_type,'_',leads[lead],'_',date_time,'_epoch_')
+model_name_path <- paste0("../models/",model_name_template)
 
 # Save model at epochs of choice:
 epoch_save_callback <- callback_lambda(
   on_epoch_end = function(epoch, logs) {
-    if (epoch %in% (epochs_to_save - 1)) {
-      # Save at epochs 20, 30, 40 (0-based index)
+    if (epoch %in% (epochs_to_save - 1)) {  # Save at epochs 20, 30, 40 (0-based index)
       model_name <- paste0(model_name_path, epoch + 1, ".h5")
       save_model_tf(model, model_name)
       print(paste("Saved model at epoch", epoch + 1))
@@ -64,64 +61,54 @@ inputs <- layer_input(shape = c(5000, 1), dtype = 'float32') |>
 outputs <-
   inputs |>
   layer_normalization() |> # normalize layers
-  bidirectional(layer_lstm(
-    units = bilstm_layers,
-    return_sequences = 'True',
-    activation = 'tanh'
-  )) |>
-  layer_dense(units = num_classes,
-              activation = activation,
-              name = 'predictions')
+  bidirectional(layer_lstm(units = bilstm_layers, return_sequences = 'True', activation = 'tanh')) |>
+  layer_dense(units = num_classes, activation = activation, name = 'predictions')
 
-model <- keras_model(inputs = inputs,
-                     outputs = outputs,
-                     name = 'mdl')
+model <- keras_model(inputs = inputs, outputs = outputs, name = 'mdl')
 
 model |>
-  compile(optimizer = 'adam',
-          # optimizer = 'rmsprop',
-          loss = 'sparse_categorical_crossentropy',
-          metrics = 'accuracy')
+  compile(
+    optimizer = 'adam',
+    # optimizer = 'rmsprop',
+    loss = 'sparse_categorical_crossentropy',
+    metrics = 'accuracy'
+  )
 
 # Train model -------------------------------------------------------------
 # Print to command line:
-cat("lead:",lead,'/',leads[lead],"\n",
-  "model_type:",model_type,"\n",
-  "model_name:",model_name_path,"\n",
-  "bilstm_layers:",bilstm_layers,"\n",
-  "epochs:",epochs,"\n",
-  "activation:",activation,"\n",
-  "rounds:",rounds,"\n",
-  "max_noise:",max_noise,"\n",
-  "dilate_range:",dilate_range,"\n",
-  "annotator_style:",annotator_style,"\n",
-  "filter:",filter,"\n",
-  "normalize:",out$normalize,"\n"
-)
+cat("lead:", lead, '/',leads[lead], "\n",
+    "model_type:", model_type, "\n",
+    "model_name:", model_name_path, "\n",
+    "bilstm_layers:", bilstm_layers, "\n",
+    "epochs:", epochs, "\n",
+    "activation:", activation, "\n",
+    "rounds:", rounds, "\n",
+    "max_noise:", max_noise, "\n",
+    "dilate_range:", dilate_range, "\n",
+    "annotator_style:", annotator_style, "\n",
+    "filter:", filter, "\n",
+    "normalize:", out$normalize, "\n")
 
 # Train
 start <- Sys.time()
-history <- model |> fit(
-  training_signal,
-  training_annotations,
-  epochs = epochs,
-  validation_data = list(testing_signal, testing_annotations),
-  verbose = 2,
-  callbacks = list(epoch_save_callback)
-)
+history <- model |> fit(training_signal, training_annotations, 
+                        epochs = epochs, 
+                        validation_data = list(testing_signal, testing_annotations),
+                        verbose = 2,
+                        callbacks = list(epoch_save_callback))
 
-# output_name <- paste0("../models/",model_name)
+# output_name <- paste0("../models/",model_name_template)
 # save_model_tf(model, output_name)
 
 end <- Sys.time()
-time_spent <- end - start
+time_spent <- end-start
 cat("time_spent:", time_spent, "\n")
 # bilstm: bilstm_layers, activation
 # cnn_bilstm_attn: dropout, bilstm_layers
 # UNET: dropout, filters
 # **specify training/testing samples from out$
 
-# Add to
+# Add to 
 
 # Test model on testing LUDB samples--------------------------------------------------------------
 new_row <- c()
@@ -129,10 +116,10 @@ load('../uih_ecgs.RData')
 
 for (checkpoint_number in 1:length(epochs_to_save)) {
   # Load model
-  model_name <- paste0(model_name_template, epochs_to_save[checkpoint_number])
-  model_path <- paste0('../models/', model_name)
-  
-  model <- load_model_tf(paste0(model_path, '.h5'))
+  model_name <- paste0(model_name_template,epochs_to_save[checkpoint_number])
+  model_path <- paste0('../models/',model_name)
+                       
+  model <- load_model_tf(paste0(model_path,'.h5'))
   
   predictions <- model %>% predict(testing_signal)
   predictions_integer <- array(0, c(nrow(predictions), ncol(predictions)))
@@ -161,7 +148,7 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
   
   if (normalize) {
     for (i in 1:nrow(uih_samples)) {
-      filtered[i, ] <- (filtered[i, ] - min(filtered[i, ])) / (max(filtered[i, ]) - min(filtered[i, ])) * 100
+      filtered[i,] <- (filtered[i,] - min(filtered[i,])) / (max(filtered[i,]) - min(filtered[i,])) * 100
     }
   }
   
@@ -214,12 +201,6 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
   
   Rpeaks_prog$total <- sum(Rpeaks_prog)
   print(Rpeaks_prog)
-  str(Rpeaks_prog)
-  
-  Rpeaks_prog_P <- Rpeaks_prog$P
-  Rpeaks_prog_QRS <- Rpeaks_prog$QRS
-  Rpeaks_prog_T <- Rpeaks_prog$T
-  Rpeaks_prog_total <- Rpeaks_prog$total
   
   # Find median P, T wave length:
   for (i in 1:nrow(uih_predictions_integer)) {
@@ -236,81 +217,43 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
   }
   t_wave_length <- median(t_wave_lengths,na.rm = TRUE)
   
-  print(data.frame(
-    name = model_name,
-    type = model_type,
-    ann_style = annotator_style,
-    lead = lead,
-    bilstm_layers = bilstm_layers,
-    dropout = NA,
-    filters = NA,
-    epochs = epochs_to_save[checkpoint_number],
-    time = round(time_spent * (epochs_to_save[checkpoint_number] / epochs), 2),
-    training_samples = I(list(out$training_samples)),
-    confusion = I(list(confusion)),
-    dilate_range = I(list(dilate_range)),
-    max_noise = max_noise,
-    rounds = rounds,
-    filter = filter,
-    wave_counter = I(list(wave_counter)),
-    normalize = normalize,
-    uih_prog = uih_prog,
-    uih_prog_revised = uih_prog_revised,
-    confidence = confidence,
-    Rpeaks_prog_P = Rpeaks_prog_P,  # Ensure proper reference
-    Rpeaks_prog_QRS = Rpeaks_prog_QRS,
-    Rpeaks_prog_T = Rpeaks_prog_T,
-    Rpeaks_prog_total = Rpeaks_prog_total,
-    p_wave_length = p_wave_length,
-    t_wave_length = t_wave_length
-  ))
-  
   # Add new row for model_log
-new_row <- rbind(
-  new_row,
-  data.frame(
-    name = model_name,
-    type = model_type,
-    ann_style = annotator_style,
-    lead = lead,
-    bilstm_layers = bilstm_layers,
-    dropout = NA,
-    filters = NA,
-    epochs = epochs_to_save[checkpoint_number],
-    time = round(time_spent * (epochs_to_save[checkpoint_number] / epochs), 2),
-    training_samples = I(list(out$training_samples)),
-    confusion = I(list(confusion)),
-    dilate_range = I(list(dilate_range)),
-    max_noise = max_noise,
-    rounds = rounds,
-    filter = filter,
-    wave_counter = I(list(wave_counter)),
-    normalize = normalize,
-    uih_prog = uih_prog,
-    uih_prog_revised = uih_prog_revised,
-    confidence = confidence,
-    Rpeaks_prog_P = Rpeaks_prog_P,  # Ensure proper reference
-    Rpeaks_prog_QRS = Rpeaks_prog_QRS,
-    Rpeaks_prog_T = Rpeaks_prog_T,
-    Rpeaks_prog_total = Rpeaks_prog_total,
-    p_wave_length = p_wave_length,
-    t_wave_length = t_wave_length,
-    kernel = NA
+  new_row <- rbind(
+    new_row,
+    data.frame(
+      name = model_name,
+      type = model_type,
+      ann_style = annotator_style,
+      lead = lead,
+      bilstm_layers = bilstm_layers,
+      dropout = NA,
+      filters = NA,
+      epochs = epochs_to_save[checkpoint_number],
+      time = round(time_spent * (epochs_to_save[checkpoint_number] / epochs), 2),
+      training_samples = I(list(out$training_samples)),
+      confusion = I(list(confusion)),
+      dilate_range = I(list(dilate_range)),
+      max_noise = max_noise,
+      rounds = rounds,
+      filter = filter,
+      wave_counter = I(list(wave_counter)),
+      normalize = out$normalize,
+      uih_prog = uih_prog,
+      uih_prog_revised = uih_prog_revised,
+      confidence = confidence,
+      Rpeaks_prog_P = Rpeaks_prog$P,
+      Rpeaks_prog_QRS = Rpeaks_prog$QRS,
+      Rpeaks_prog_T = Rpeaks_prog$T,
+      Rpeaks_prog_total = Rpeaks_prog$total,
+      p_wave_length = p_wave_length,
+      t_wave_length = t_wave_length,
+      kernel = NA
+    )
   )
-)
-
 }
 
 print(new_row)
-cat("New row names:","\n")
-print(names(new_row))
-print(names(new_row), quote = TRUE) 
-
-cat("Class of normalize and uih_prog:","\n")
-print(class(normalize))
-print(class(uih_prog))
-
-cat("Finished training and analyzing. Adding data to model log...", "\n")
+cat("Finished training and analyzing. Adding data to model log...","\n") 
 
 # Write to log ------------------------------------------------------------
 # Add lock to avoid overwriting

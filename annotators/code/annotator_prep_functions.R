@@ -124,7 +124,7 @@ prep_ludb <- function(lead,
       
       # Normalize signal: RECOMMEND KEEPING THIS TURNED OFF
       if (normalize) {
-        compressed_signal <- (compressed_signal - min(compressed_signal)) / (max(compressed_signal) - min(compressed_signal))
+        compressed_signal <- (compressed_signal - min(compressed_signal)) / (max(compressed_signal) - min(compressed_signal)) * 100
       }
       
       # Now, randomly place the random signal/ann interval:
@@ -160,7 +160,7 @@ prep_ludb <- function(lead,
     
     # Normalize signal
     if (normalize) {
-      signal <- (signal - min(signal)) / (max(signal) - min(signal))
+      signal <- (signal - min(signal)) / (max(signal) - min(signal)) * 100
     }
     
     # Set values of first and last 1000 indices to 0 (could also do 1st and last annotated indices)
@@ -254,8 +254,17 @@ ann_wfdb2continuous2 <- function(object, length=5000) {
   if (any(class(object) == 'egm')) {
     length <- nrow(object$signal)
     wfdb_ann <- object$annotation
-  } else if (any(class(object) == 'annotation_table')) {
+  # } else if (any(class(object) == 'annotation_table')) {
+  #   wfdb_ann <- object
+  } else {
     wfdb_ann <- object
+  }
+  
+  if (nrow(object) == 0) {
+    output <- rep(NA,length)
+    return(output)
+    warning('Annotation file is empty')
+    break
   }
   
   output <- rep(0,length)
@@ -582,40 +591,22 @@ check_ann_prog_ludb_helper <- function(testing_annotations = testing_annotations
   return(output)
 }
 
-check_ann_prog <- function(predicted, ludb) {
-  # Check annotation progression
-  #   ie- P > QRS > T
-  
-  # NOTE: this is for use on non-LUDB ECGs. ie those without a ground truth annotation
-  #   
-  
-  # Input: single ECG annotation - vector or wfdb format
-  
-  # Pseudocode:
-  #   filter ECGs
-  #   could use EGM::qrs_detect() for ~ground truth. Could use ecgpuwave 
-  
-  # If annotation is in matrix format (not WFDB), convert to wfdb
-  annotations <- ann_continuous2wfdb(annotations)
-  
-  wave_progression <- annotations$type[!annotations$type %in% c('(',')')]
-  
-  p <- which(wave_progression == 'p')
-  qrs <- which(wave_progression == 'N')
-  t <- which(wave_progression == 't')
-  
-  (p+1) %in% qrs
-  (qrs+1) %in% t
-  (t+1) %in% p
-  
-}
-
-# Could only focus on annotations after the first R peak, before last Rpeak (use egm::find_Rpeaks)
-
 ann_continuous2wfdb <- function(annotations, Fs = 500) {
   # Not up to date, largely defunct for now. Used to convert index to index
   # annotation (value for each time point) to wave onset/peak/offset format. 
   # WFDB format
+  
+  if (sum(is.na(annotations)) == length(annotations)) {
+    annotation_table <- data.frame(time = c(), 
+                                   sample = c(), 
+                                   type = c(), 
+                                   subtype = c(), 
+                                   channel = c(), 
+                                   number = c()
+                                   )
+    return(annotation_table)
+    break
+  }
   
   if (any(annotations == 1)) {
     p_waves <- which(annotations == 1)
@@ -712,8 +703,10 @@ ann_continuous2wfdb <- function(annotations, Fs = 500) {
   
   class(annotation_table) <- c('data.frame','annotation_table')
   
-  annotation_table <- annotation_table[order(annotation_table$sample),]
-  row.names(annotation_table) <- NULL
+  if (nrow(annotation_table > 0)) {
+    annotation_table <- annotation_table[order(annotation_table$sample), ]
+    row.names(annotation_table) <- NULL
+  }
   
   return(annotation_table)
 }
@@ -747,7 +740,9 @@ check_ann_prog <- function(annotation) {
   valid_tp <- all(progression[check_t[check_t < length(progression)] + 1] == "p")
   
   # Final check
-  if (valid_pN & valid_Nt & valid_tp) {
+  if (valid_pN & valid_Nt & valid_tp & length(progression > 1)) {
+    # Check if statements, and check the annotation has more than 1 wave
+    
     # print("The progression follows the expected pattern.")
     output <- 1
   } else {

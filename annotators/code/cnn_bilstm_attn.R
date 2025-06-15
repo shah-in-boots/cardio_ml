@@ -139,8 +139,11 @@ confusion <- confusion_analysis()
 wave_counter <- check_ann_prog_ludb_helper(predictions_integer = predictions_integer, testing_annotations = testing_annotations)
 
 # UIH test samples Analysis (nonlabelled) ---------------------------------
-load('../uih_ecgs.RData')
-uih_samples <- do.call(rbind,lapply(1:length(uih_ecgs), function(idx) uih_ecgs[[idx]]$signal[[lead+1]]))
+leads <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6') 
+# note: UIH lead order is AVF AVL AVR. Therefore, use names to match, **NOT** number
+
+uih_samples <- do.call(rbind, lapply(1:length(uih_ecgs), function(idx)
+  uih_ecgs[[idx]]$signal[[leads[lead]]]))
 
 filtered <- array(0,dim(uih_samples))
 for (i in 1:nrow(uih_samples)) {
