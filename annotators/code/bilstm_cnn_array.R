@@ -201,8 +201,22 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
     }
   }
   
+  uih_input <- array(NA,c(dim(filtered),number_of_derivs+1))
+  if (number_of_derivs > 0) {
+    for (i in 1:nrow(filtered)) {
+      
+      signal <- add_derivs(signal = filtered[i,],
+                           number_of_derivs = number_of_derivs,
+                           mask_value = mask_value)
+      uih_input[i,,] <- signal
+    }
+  } else {
+    uih_input[,,1] <- filtered
+  }
+  
   # Predict
-  uih_predictions <- model %>% predict(filtered)
+  uih_predictions <- model %>% predict(uih_input)
+
   uih_predictions_integer <- array(0, c(nrow(uih_predictions), ncol(uih_predictions)))
   for (i in 1:nrow(uih_predictions)) {
     uih_predictions_integer[i, ] <- max.col(uih_predictions[i, , ])
@@ -237,8 +251,8 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
   
   # Check wave progression using EGM::find_RPeaks()
   library(dplyr)
-  uih_Rpeaks <- do.call(rbind, lapply(1:nrow(filtered), function(idx) {
-    round(check_ann_prog_RPeaks(filtered[idx, ], uih_predictions_integer[idx, ]),
+  uih_Rpeaks <- do.call(rbind, lapply(1:nrow(uih_input[,,1]), function(idx) {
+    round(check_ann_prog_RPeaks(uih_input[,,1], uih_predictions_integer[idx, ]),
           2)
   }))
   

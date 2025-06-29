@@ -1,12 +1,12 @@
 # Prep --------------------------------------------------------------------
 source('annotator_prep_functions.R')
 annotator_style <- 2
-lead <- 1
+lead <- 3
 rounds <- 4
-max_noise = 0.03 # 0.05, 0.03
+max_noise = 0.05 # 0.05, 0.03
 dilate_range <- c(0.03, 0.05)
 filter <- FALSE
-epochs_to_save <- c(15,20,30) # list which epochs you want to save
+epochs_to_save <- c(15,20,25) # list which epochs you want to save
 bilstm_layers <- 200 # original: 200
 normalize <- TRUE
 number_of_derivs = 2
@@ -200,8 +200,21 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
     }
   }
   
+  uih_input <- array(NA,c(dim(filtered),number_of_derivs+1))
+  if (number_of_derivs > 0) {
+    for (i in 1:nrow(filtered)) {
+      
+      signal <- add_derivs(signal = filtered[i,],
+                           number_of_derivs = number_of_derivs,
+                           mask_value = mask_value)
+      uih_input[i,,] <- signal
+    }
+  } else {
+    uih_input[,,1] <- filtered
+  }
+
   # Predict
-  uih_predictions <- model %>% predict(filtered)
+  uih_predictions <- model %>% predict(uih_input)
   uih_predictions_integer <- array(0, c(nrow(uih_predictions), ncol(uih_predictions)))
   for (i in 1:nrow(uih_predictions)) {
     uih_predictions_integer[i, ] <- max.col(uih_predictions[i, , ])
@@ -236,8 +249,8 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
   
   # Check wave progression using EGM::find_RPeaks()
   library(dplyr)
-  uih_Rpeaks <- do.call(rbind, lapply(1:nrow(filtered), function(idx) {
-    round(check_ann_prog_RPeaks(filtered[idx, ], uih_predictions_integer[idx, ]),
+  uih_Rpeaks <- do.call(rbind, lapply(1:nrow(uih_input[,,1]), function(idx) {
+    round(check_ann_prog_RPeaks(uih_input[idx, ,1], uih_predictions_integer[idx, ]),
           2)
   }))
   
