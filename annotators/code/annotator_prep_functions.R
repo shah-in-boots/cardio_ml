@@ -3,11 +3,15 @@
 #' Takes random continuous segment between 2 and 8 seconds, zeros the rest. Randomly shifts the segment across the vector
 #' Then normalizes the signal for each sample.
 #' 
-#' @param dilate_range For training set: 2 element vector. Defines the range the samples will be randomly. c(0.03,0.05) = 3 to 5%
+#' @param dilate_range For training set: 2 element vector. Defines the range the samples will be randomly. Recommend: c(0.03,0.05) (ie 3 to 5%)
 #' 
-#' @param max_noise For training set: maximum standard deviation of the added Gaussian noise. ECGs are scaled from 0 to 1. 
+#' @param max_noise For training set: maximum standard deviation of the added Gaussian noise. ECGs are scaled from 0 to 1. Recommend: between 0.01 to 0.07
 #' 
-#' @param rounds number of times the training dataset will be duplicated. Note: a value of 2 will double the length of the training set. A value of 1 will not change the length
+#' @param rounds number of times the training dataset will be duplicated. Note: a value of 2 will double the length of the training set. A value of 1 will not change the length. Recommend: 3 or 4
+#' 
+#' @param filter if the signal should be run thru a bandpass filter to remove baseline wander, high frequency noise. Recommend: FALSE
+#' 
+#' @param number_of_derivs if/how many derivatives should be included. If set to 1: input would be the original signal AND the first derviative (matrix form)
 prep_ludb <- function(lead,
                       annotator_style = 2,
                       split = 0.7,
@@ -15,8 +19,9 @@ prep_ludb <- function(lead,
                       max_noise = 0.05,
                       rounds = 1,
                       filter,
+                      number_of_derivs,
                       mask_value = -1,
-                      normalize = FALSE) {
+                      normalize = TRUE) {
   library(stats)
   library(signal)
   
@@ -49,9 +54,9 @@ prep_ludb <- function(lead,
   training_set <- ludb_set[c(training_samples)]
   testing_set <- ludb_set[c(testing_samples)]
   
-  training_signal      <- array(NA, c(length(training_set)*rounds, length))
+  training_signal      <- array(NA, c(length(training_set)*rounds, length, number_of_derivs+1))
   training_annotations <- array(NA, c(length(training_set)*rounds, length))
-  testing_signal       <- array(NA, c(length(testing_set), length))
+  testing_signal       <- array(NA, c(length(testing_set), length, number_of_derivs+1))
   testing_annotations  <- array(NA, c(length(testing_set), length))
   
   # Prep for calculating indices for time range between 2 and 8 seconds in training set
@@ -122,7 +127,7 @@ prep_ludb <- function(lead,
         compressed_signal <- compressed_signal + noise # Add the noise to the original ECG signal
       } 
       
-      # Normalize signal: RECOMMEND KEEPING THIS TURNED OFF
+      # Normalize signal
       if (normalize) {
         compressed_signal <- (compressed_signal - min(compressed_signal)) / (max(compressed_signal) - min(compressed_signal)) * 100
       }
@@ -136,16 +141,24 @@ prep_ludb <- function(lead,
       shifted_indices <- shifted_start:(shifted_start + new_length - 1)
       
       # Create new vectors initialized with zeros
-      shifted_signal <- rep(mask_value, vector_length)
+      shifted_signal <- array(mask_value, c(vector_length,number_of_derivs+1))
       shifted_ann <- rep(0, vector_length)
       
+      # Add the derivatives as needed
+      if (number_of_derivs > 0) {
+        compressed_signal <- add_derivs(signal = compressed_signal,
+                                        number_of_derivs = number_of_derivs,
+                                        mask_value = mask_value)
+      }
+      
       # Shift the non-zero values to the new interval
-      shifted_signal[shifted_indices] <- compressed_signal
+      shifted_signal[shifted_indices,] <- compressed_signal
       shifted_ann[shifted_indices] <- compressed_ann
+ 
       
       # Add sample to matrix
       index <- sample + (round-1)*length(training_set)
-      training_signal[index, ] <- shifted_signal # signal
+      training_signal[index, , ] <- shifted_signal # signal
       training_annotations[index, ] <- shifted_ann # ann
     }
   }
@@ -163,12 +176,18 @@ prep_ludb <- function(lead,
       signal <- (signal - min(signal)) / (max(signal) - min(signal)) * 100
     }
     
+    if (number_of_derivs > 0) {
+      signal <- add_derivs(signal = signal,
+                                      number_of_derivs = number_of_derivs,
+                                      mask_value = mask_value)
+    }
+    
     # Set values of first and last 1000 indices to 0 (could also do 1st and last annotated indices)
-    signal[c(1:1000, 4001:5000)] <- mask_value
+    signal[c(1:1000, 4001:5000),] <- mask_value
     ann[c(1:1000, 4001:5000)] <- 0
     
     # Add sample to matrix
-    testing_signal[sample, ] <- signal
+    testing_signal[sample, , ] <- signal
     testing_annotations[sample, ] <- ann
   }
   
@@ -394,6 +413,33 @@ ecg_filter <- function(signal, frequency = 500, low = 0.5, high = 40) {
     
   }))
 }
+
+
+# Difference/Derivative functions -----------------------------------------
+add_derivs <- function(signal, number_of_derivs = 2,mask_value=0) {
+  if (number_of_derivs == 0) {
+    return(signal)
+    break
+  }
+  # If input is of size 1 x 5000, change to vector:
+  if (length(dim(signal)) > 1) {
+    signal <- c(signal)
+    
+  }
+  
+  # Do first derivative manually
+  diff_signal <- cbind(signal, c(mask_value, diff(signal)))
+  
+  if (number_of_derivs > 1) {
+    for (i in 2:number_of_derivs) {
+      last_deriv <- c(mask_value, diff(diff_signal[, ncol(diff_signal)]))
+      diff_signal <- cbind(diff_signal, last_deriv)
+    }
+  }
+  
+  return(diff_signal)
+}
+
 
 # Confusion matrix analysis ----------------------------------------------------------------
 confusion_analysis <- function(predictions = predictions_integer,
@@ -661,7 +707,7 @@ ann_continuous2wfdb <- function(annotations, Fs = 500) {
     }
   }
   
-  t <- (0 : length(annotations) - 1 ) / Fs
+  t <- (1 : length(annotations) ) / Fs
   
   
   # Build Table

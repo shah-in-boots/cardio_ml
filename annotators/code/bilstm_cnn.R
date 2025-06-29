@@ -9,6 +9,7 @@ filter <- FALSE
 epochs_to_save <- c(15,20,30) # list which epochs you want to save
 bilstm_layers <- 200 # original: 200
 normalize <- TRUE
+number_of_derivs = 2
 
 out <- prep_ludb(
   lead = lead,
@@ -17,7 +18,9 @@ out <- prep_ludb(
   max_noise = max_noise,
   dilate_range = dilate_range,
   filter = filter,
-  normalize = normalize
+  normalize = normalize,
+  number_of_derivs = number_of_derivs,
+  mask_value = -1
 )
 
 training_signal <- out$training_signal
@@ -32,14 +35,14 @@ library(keras)
 library(tensorflow)
 
 # Model parameters
-input_length <- 5000          # number of time steps in the ECG
-num_channels <- 1             # single lead input
-units_lstm <- bilstm_layers   # LSTM units
-mask_value <- out$mask_value  # if you wish to mask zero values in the input
-activation <- "softmax"       # final activation for multi-class predictions
+input_length <- 5000                # number of time steps in the ECG
+num_channels <- number_of_derivs+1  # single lead input
+units_lstm <- bilstm_layers         # LSTM units
+mask_value <- out$mask_value        # if you wish to mask zero values in the input
+activation <- "softmax"             # final activation for multi-class predictions
 model_type <- 'bilstm_cnn'
-kernel <- c(5,3)              # size of kernel for each convolutional layer
-filters <- c(32,64)           # number of filters for each convolutional layer
+kernel <- c(5,3)                    # size of kernel for each convolutional layer
+filters <- c(32,64)                 # number of filters for each convolutional layer
 
 
 # Build and name model
@@ -327,7 +330,8 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
       Rpeaks_prog_total = Rpeaks_prog_total,
       p_wave_length = p_wave_length,
       t_wave_length = t_wave_length,
-      kernel = I(list(kernel))
+      kernel = I(list(kernel)),
+      derivs = number_of_derivs
     )
   )
   

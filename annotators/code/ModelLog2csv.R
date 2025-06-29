@@ -71,7 +71,7 @@ write.csv(model_log,'../model_log.csv')
 # full tables -------------------------------------------------------------
 idx=1#+idx
 library(formattable)
-# idx=5
+idx=12
 leads <- c("i","ii","iii","avr","avl","avf","v1","v2","v3","v4","v5","v6")
 lead <- leads[idx]
 
