@@ -29,6 +29,13 @@ model_log$dilate_range <- unlist(lapply(1:nrow(model_log),function(idx) model_lo
 # Extract sensitivity and PPV values from testing set:
 # lapply(1:nrow(model_log),function(idx) model_log$confusion[[idx]]$matrix[,c(1,3)])
 
+# Define helper function:
+library(purrr)
+safe_extract <- possibly(
+  function(x, cls, metric) x$matrix[cls, metric],
+  otherwise = NA_real_
+)
+
 model_log <- model_log %>%
   mutate(
     sens_0 = map_dbl(confusion, ~ .x$matrix["Class: 0", "Sensitivity"]),
@@ -40,7 +47,18 @@ model_log <- model_log %>%
     ppv_qrs = map_dbl(confusion, ~ .x$matrix["Class: 2", "Pos Pred Value"]),
     ppv_t = map_dbl(confusion, ~ .x$matrix["Class: 3", "Pos Pred Value"])
   ) %>%
-  select(-confusion)  # Remove wave_counter column
+  
+  mutate(
+    sens_0_uih   = map_dbl(confusion_uih, ~ safe_extract(.x, "Class: 0", "Sensitivity")),
+    sens_p_uih   = map_dbl(confusion_uih, ~ safe_extract(.x, "Class: 1", "Sensitivity")),
+    sens_qrs_uih = map_dbl(confusion_uih, ~ safe_extract(.x, "Class: 2", "Sensitivity")),
+    sens_t_uih   = map_dbl(confusion_uih, ~ safe_extract(.x, "Class: 3", "Sensitivity")),
+    ppv_0_uih    = map_dbl(confusion_uih, ~ safe_extract(.x, "Class: 0", "Pos Pred Value")),
+    ppv_p_uih    = map_dbl(confusion_uih, ~ safe_extract(.x, "Class: 1", "Pos Pred Value")),
+    ppv_qrs_uih  = map_dbl(confusion_uih, ~ safe_extract(.x, "Class: 2", "Pos Pred Value")),
+    ppv_t_uih    = map_dbl(confusion_uih, ~ safe_extract(.x, "Class: 3", "Pos Pred Value"))
+  ) %>%
+  select(-confusion,-confusion_uih)  # Remove wave_counter column
 
 # Extract missed_waves column, specifically the 'missed_waves_per_sample' subcolumn
 model_log <- model_log %>%
@@ -58,7 +76,12 @@ model_log <- model_log %>%
   mutate(f1_0 = round(2 * (sens_0 * ppv_0) / (sens_0 + ppv_0),3)) %>%
   mutate(f1_p = round(2 * (sens_p * ppv_p) / (sens_p + ppv_p),3)) %>%
   mutate(f1_qrs = round(2 * (sens_qrs * ppv_qrs) / (sens_qrs + ppv_qrs),3)) %>%
-  mutate(f1_t = round(2 * (sens_t * ppv_t) / (sens_t + ppv_t),3))
+  mutate(f1_t = round(2 * (sens_t * ppv_t) / (sens_t + ppv_t),3)) %>%
+  
+  mutate(f1_0_uih = round(2 * (sens_0_uih * ppv_0_uih) / (sens_0_uih + ppv_0_uih),3)) %>%
+  mutate(f1_p_uih = round(2 * (sens_p_uih * ppv_p_uih) / (sens_p_uih + ppv_p_uih),3)) %>%
+  mutate(f1_qrs_uih = round(2 * (sens_qrs_uih * ppv_qrs_uih) / (sens_qrs_uih + ppv_qrs_uih),3)) %>%
+  mutate(f1_t_uih = round(2 * (sens_t_uih * ppv_t_uih) / (sens_t_uih + ppv_t_uih),3))
 
 # Rename columns:
 model_log <- model_log %>% rename(p_length = p_wave_length, t_length = t_wave_length)
@@ -71,7 +94,7 @@ write.csv(model_log,'../model_log.csv')
 # full tables -------------------------------------------------------------
 idx=1#+idx
 library(formattable)
-idx=12
+idx=7
 leads <- c("i","ii","iii","avr","avl","avf","v1","v2","v3","v4","v5","v6")
 lead <- leads[idx]
 
@@ -85,8 +108,13 @@ full_table <- full_table %>% filter(lead == !!lead) %>%
   filter(!is.na(uih_prog)) %>%
   select(-lead, -dropout, -filters, -Rpeaks_prog_P, -Rpeaks_prog_QRS, -Rpeaks_prog_T,
          -sens_0,-sens_p,-sens_qrs,-sens_t,-ppv_0,-ppv_p,-ppv_qrs,-ppv_t,
+         -sens_0_uih,-sens_p_uih,-sens_qrs_uih,-sens_t_uih,-ppv_0_uih,-ppv_p_uih,-ppv_qrs_uih,-ppv_t_uih,
          -missed_p,-missed_qrs,-missed_t, -dilate_range) %>%
-  select(filter, rounds, bilstm_layers, normalize, confidence, type, max_noise, epochs, everything())
+  select(rounds, bilstm_layers, type, max_noise, epochs, 
+         f1_0_uih, f1_p_uih, f1_qrs_uih, f1_t_uih,
+         f1_0, f1_p, f1_qrs, f1_t,
+         row,
+         uih_prog, everything())
 
 # # Table (in R)
 formattable(full_table, list(
@@ -95,7 +123,11 @@ formattable(full_table, list(
   f1_0 = color_tile("red", "green"),
   f1_p = color_tile("red", "green"),
   f1_qrs = color_tile("red", "green"),
-  f1_t = color_tile("red", "green")
+  f1_t = color_tile("red", "green"),
+  f1_0_uih = color_tile("red", "green"),
+  f1_p_uih = color_tile("red", "green"),
+  f1_qrs_uih = color_tile("red", "green"),
+  f1_t_uih = color_tile("red", "green")
   ))
     # confidence, sens 4x, ppv 4x
 

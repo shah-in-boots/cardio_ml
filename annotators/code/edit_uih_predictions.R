@@ -31,6 +31,7 @@
 # 2. convert wfdb compact version to continuous (then use ann_continuous2wfdb function)
 ann_wfdb2compact <- function(ann_wfdb) {
   library(dplyr)
+  class(ann_wfdb) <- "data.frame"
   ann_wfdb <- ann_wfdb %>% mutate(idx = row_number())
   
   # Extract waves
@@ -70,16 +71,18 @@ ann_compact2continuous <- function(ann_compact) {
 }
 
 
-# run ---------------------------------------------------------------------
+# Prepare file ---------------------------------------------------------------------
 library(fs)
-setwd("C:/Users/darre/OneDrive/Documents/UICOM Research/annotators/code") # adjust as needed
-source('annotator_prep_functions.R') 
-load('../deid_uih_ecgs.RData') # might need to change this path
-load('../uih_predictions/matched_predictions_I.RData') # might need to change path. Can load in other leads as needed
+library(htmlwidgets)
+setwd("C:/Users/darre/OneDrive/Documents/UICOM Research/annotators") # adjust as needed
+source('code/annotator_prep_functions.R') 
+load('deid_uih_ecgs.RData') # might need to change this path
 
-sample <- 1
-lead <- 'I'
+sample <- 1+sample # next: 12
+lead <- 'AVR'
+# I	II	III	AVF	AVL	AVR	V1	V2	V3	V4	V5	V6
 
+load(paste0('uih_predictions/matched_predictions_',lead,'.RData')) # might need to change path. Can load in other leads as needed
 annotation_list <- get(paste0('matched_predictions_',lead)) # this allows you to dynamically set a variable. So when 
 # lead = 'I', it's the equivalent of: annotation_list <- matched_predictions_I
 
@@ -87,9 +90,13 @@ signal <- deid_uih_ecgs[[sample]]$signal[[lead]]
 annotation_wfdb <- annotation_list[[sample]]
 
 # Plot the function:
-plot_func(ecg_filter(signal),ann_wfdb2continuous2(annotation_wfdb),pointsize = 0.5)
+original_plot <- plot_func(ecg_filter(signal),ann_wfdb2continuous2(annotation_wfdb),pointsize = 0.5)
 # NOTE: try playing around with the point size varialbe (default is 1). Linewidth could help too
 # NOTE: always use the ecg_filter() function
+# Open plot in browser:
+temp_file <- tempfile(fileext = ".html")
+saveWidget(original_plot, temp_file, selfcontained = TRUE)
+browseURL(temp_file)
 
 # Print the annotation matrix to command line:
 annotation_compact <- ann_wfdb2compact(annotation_wfdb)
@@ -100,18 +107,55 @@ directory_name <- 'uih_predictions_adjusted'
 file_name <- paste0(sprintf("%03d", c(sample)),'_',lead)
 full_name <- fs::path(directory_name,file_name,ext='csv')
 if (file.exists(full_name)) {
-  print(paste('Warning, file exists. Run script after this line to continue'))
-  break
+  stop(paste('Warning, file exists. Run script after this line to continue'))
   }
 write.csv(annotation_compact, file = full_name, row.names = TRUE)
+
+
+# Edit file ---------------------------------------------------------------
 
 # Now open that csv file in excel
 
 # As you make adjustments, manually save the csv (Control + S). Then reload via:
 annotation_compact_revised <- read.csv(full_name)
 
+
+# Clean up:
+# remove NA rows
+# annotation_compact_revised <- annotation_compact_revised[!is.na(annotation_compact_revised$onset),]
+# renumber as needed
+# annotation_compact_revised$X <- 1:nrow(annotation_compact_revised)
+# write.csv(annotation_compact_revised,file = full_name)
+
+
+# If there are other symbols (ie V for PVC), remove them for plotting purposes.
+# annotation_compact_revised <- annotation_compact_revised[annotation_compact_revised$type %in% c('p', 'N', 't'), ]
+annotation_compact_revised$X <- seq_len(nrow(annotation_compact_revised))
+
+
 annotation_continuous_revised <- ann_compact2continuous(annotation_compact_revised)
 annotation_wfdb_revised <- ann_continuous2wfdb(annotation_continuous_revised)
 
 # And replot:
-plot_func(ecg_filter(signal),annotation_continuous_revised,pointsize= 0.5)
+revised_plot <- plot_func(ecg_filter(signal),annotation_continuous_revised,pointsize= 0.5)
+temp_file <- tempfile(fileext = ".html")
+saveWidget(revised_plot, temp_file, selfcontained = TRUE)
+browseURL(temp_file)
+
+
+# annotation_compact_revised$offset[annotation_compact_revised$type == 'p'] = 
+#   annotation_compact_revised$offset[annotation_compact_revised$type == 'p']+23
+# checking ----------------------------------------------------------------
+# sample <- 6
+# file_name <- paste0(sprintf("%03d", c(sample)),'_',lead)
+# 
+# signal <- deid_uih_ecgs[[sample]]$signal[[lead]]
+# annotation_wfdb <- annotation_list[[sample]]
+# 
+# annotation_compact_revised <- read.csv(paste0('../uih_predictions_adjusted/shreyank/',file_name,'.csv'))
+# annotation_continuous_revised <- ann_compact2continuous(annotation_compact_revised)
+# 
+# 
+# plot_func(ecg_filter(signal),ann_wfdb2continuous2(annotation_wfdb),pointsize = 0.5)
+# plot_func(ecg_filter(signal),annotation_continuous_revised,pointsize= 0.5)
+# 

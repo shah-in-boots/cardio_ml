@@ -12,6 +12,10 @@
 #' @param filter if the signal should be run thru a bandpass filter to remove baseline wander, high frequency noise. Recommend: FALSE
 #' 
 #' @param number_of_derivs if/how many derivatives should be included. If set to 1: input would be the original signal AND the first derviative (matrix form)
+#' 
+#' @param split percentage of samples to go in the training set (remaining go into testing set)
+#' 
+#' @param data data input. default 'ludb' sources the LUDB dataset. Alternative is to set input as the dataset you would like to be split
 prep_ludb <- function(lead,
                       annotator_style = 2,
                       split = 0.7,
@@ -21,12 +25,21 @@ prep_ludb <- function(lead,
                       filter,
                       number_of_derivs,
                       mask_value = -1,
-                      normalize = TRUE) {
+                      normalize = TRUE,
+                      data = 'ludb') {
   library(stats)
   library(signal)
   
-  # Load LUDB set
-  load('../ludb_set.RData')
+  # Load input data
+  if (any(data == 'ludb')) {
+    load('../ludb_set.RData')
+    input_data <- ludb_set
+    leads <- c("i","ii","iii","avr","avl","avf","v1","v2","v3","v4","v5","v6")
+  } else {
+    input_data <- data
+    leads <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  }
+
   
   # Assign the annotation style for ML input:
   use_func <- paste0('ann_wfdb2continuous', annotator_style)
@@ -35,24 +48,21 @@ prep_ludb <- function(lead,
   #         ann_wfdb2continuous2: 1 1 1 1 1 0 0 0 2 2 2 2 ...
   #         ann_wfdb2continuous3: 1 2 2 2 3 0 0 0 4 5 5 6 ...
   
-  # Split into train/test
-  split <- 0.7 # % of samples going to training set
-  
-  leads <- c("i","ii","iii","avr","avl","avf","v1","v2","v3","v4","v5","v6")
+
   
   length <- 5000
   sampling_frequency <- 500
   annotation_function <- get(use_func) # Get the function object
   
   # Split sets:
-  samples <- length(ludb_set)
+  samples <- length(input_data)
   sample_size <- ceiling(split * samples)
   training_samples <- sample(samples, sample_size)
   testing_samples <- 1:samples
   testing_samples <- testing_samples[-training_samples]
   
-  training_set <- ludb_set[c(training_samples)]
-  testing_set <- ludb_set[c(testing_samples)]
+  training_set <- input_data[c(training_samples)]
+  testing_set <- input_data[c(testing_samples)]
   
   training_signal      <- array(NA, c(length(training_set)*rounds, length, number_of_derivs+1))
   training_annotations <- array(NA, c(length(training_set)*rounds, length))
@@ -396,6 +406,49 @@ ann_wfdb2continuous3 <- function(object) {
   
 }
 
+
+# ann wfdb/compact --------------------------------------------------------
+ann_wfdb2compact <- function(ann_wfdb) {
+  library(dplyr)
+  class(ann_wfdb) <- "data.frame"
+  ann_wfdb <- ann_wfdb %>% mutate(idx = row_number())
+  
+  # Extract waves
+  ann_compact <- ann_wfdb %>%
+    mutate(
+      type_lead = lead(type),
+      type_lag = lag(type),
+      sample_lead = lead(sample),
+      sample_lag = lag(sample)
+    ) %>%
+    filter(type %in% c("p", "N", "t"), type_lag == "(", type_lead == ")") %>%
+    transmute(
+      type,
+      onset = sample_lag,
+      peak = sample,
+      offset = sample_lead
+    )
+  return(ann_compact)
+}
+
+ann_compact2continuous <- function(ann_compact) {
+  # Assuming your dataframe is called wave_table
+  ann_continuous <- rep(0, 5000)
+  
+  for (i in seq_len(nrow(ann_compact))) {
+    start <- ann_compact$onset[i]
+    end <- ann_compact$offset[i]
+    
+    value <- switch(ann_compact$type[i],
+                    "p" = 1,
+                    "N" = 2,
+                    "t" = 3,
+                    "V" = 4)
+    
+    ann_continuous[start:end] <- value
+  }
+  return(ann_continuous)
+}
 
 # Filter ------------------------------------------------------------------
 ecg_filter <- function(signal, frequency = 500, low = 0.5, high = 40) {
@@ -1004,6 +1057,7 @@ plot_func <- function(y,
   color[color == 1] <- 'p'
   color[color == 2] <- 'N'
   color[color == 3] <- 't'
+  color[color == 4] <- 'V'
   
   x <- 1:length(y)
   
@@ -1025,3 +1079,259 @@ plot_func <- function(y,
   return(plot)
 }
 
+
+plot_func2 <- function(y, 
+                       color = 0,
+                       linewidth = 0.5, 
+                       pointsize = 1.5, 
+                       ylim = NULL, 
+                       plotly = 'yes',
+                       legend = TRUE) {
+  library(ggplot2)
+  library(plotly)
+  
+  # Map numeric codes to labels
+  color[color == 0] <- '0'
+  color[color == 1] <- 'P'
+  color[color == 2] <- 'QRS'
+  color[color == 3] <- 'T'
+  color[color == 4] <- 'V'
+  
+  x <- seq_along(y) / 500
+  
+  frame <- data.frame(Time = x, Signal = y, Wave = color)
+  
+  # Create a grouping variable that increments whenever Wave changes
+  frame$segment <- cumsum(c(TRUE, diff(as.numeric(as.factor(frame$Wave))) != 0))
+  
+  plot <- ggplot(frame, aes(Time, Signal, color = Wave, group = segment)) +
+    geom_path(linewidth = linewidth) +
+    geom_point(size = pointsize) +
+    scale_color_manual(
+      values = c("0" = "darkgray", "P" = "#1A759F", "QRS" = "#28B000", "T" = "#BC4B51", "V" = "red")
+    ) +
+    theme_bw() +
+    coord_cartesian(ylim = ylim) +
+    theme(
+      legend.title = element_blank(),
+      legend.position = if (legend) "right" else "none"
+    )
+  
+  if (plotly == 'yes') {
+    plot <- ggplotly(plot)
+  }
+  
+  return(plot)
+}
+
+# bilstm_cnn model --------------------------------------------------------
+build_bilstm_cnn <- function(bilstm_layers, 
+                             number_of_derivs,
+                             mask_value,
+                             kernel,
+                             filters,
+                             activation = 'softmax',
+                             num_classes = num_classes,
+                             model_name_path) {
+  library(keras)
+  library(tensorflow)
+  
+  # Model parameters
+  bilstm_layers <- bilstm_layers         # LSTM units
+  input_length <- 5000                # number of time steps in the ECG
+  num_channels <- number_of_derivs+1  # single lead input
+  mask_value <- out$mask_value        # if you wish to mask zero values in the input
+  kernel <- kernel                    # size of kernel for each convolutional layer
+  filters <- filters                  # number of filters for each convolutional layer
+  activation <- activation            # final activation for multi-class predictions
+  
+  
+  # Define the model input
+  inputs <- layer_input(shape = c(input_length, num_channels), dtype = 'float32') |>
+    layer_masking(mask_value = mask_value) # Masking input values equal to 0
+  
+  # -- Convolutional Feature Extraction Block --
+  # This block applies 1D convolutions to extract local features from the ECG slice.
+  cnn_block <- inputs %>%
+    # First convolution: using a larger kernel can help capture the broader wave morphology.
+    layer_conv_1d(
+      filters = filters[1],
+      kernel_size = kernel[1],
+      activation = 'relu',
+      padding = "same"
+    ) %>%
+    # Max pooling to downsample and focus on the most prominent features.
+    layer_max_pooling_1d(pool_size = 2) %>%
+    # Second convolution: deeper features at a possibly finer resolution.
+    layer_conv_1d(
+      filters = filters[2],
+      kernel_size = kernel[2],
+      activation = 'relu',
+      padding = "same"
+    ) %>%
+    layer_max_pooling_1d(pool_size = 2)
+  
+  # -- Recurrent Block for Temporal Modeling --
+  # The output of the convolutional block is still sequential.
+  # The bidirectional LSTM helps capture signals from both past and future contexts.
+  lstm_block <- cnn_block %>%
+    bidirectional(layer_lstm(
+      units = bilstm_layers,
+      return_sequences = TRUE,  # important to output a sequence for per-time-step predictions
+      activation = 'tanh'
+    ))
+  
+  # -- Upsampling Layer --
+  upsampled_block <- lstm_block %>%
+    layer_upsampling_1d(size = 4)  # Upsample by a factor of 2 to restore time steps
+  
+  # -- Output Layer --
+  # A dense layer produces classification probabilities at every time step.
+  outputs <- upsampled_block %>%
+    layer_dense(units = num_classes, activation = activation, name = "predictions")
+  
+  # Define, compile, and summarize the model
+  model <- keras_model(inputs = inputs, outputs = outputs, name = "CNN_LSTM_ECG_Model")
+  
+  model %>% compile(
+    optimizer = optimizer_adam(),
+    loss = "sparse_categorical_crossentropy",
+    metrics = "accuracy"
+  )
+  
+  return(model)
+}
+
+
+
+# Find Isoelectric -------------------------------------------------------------
+isoelec_find <- function(signal,annotations) {
+  # Finds the mean value of the T-P intervals within the given sample lead
+  # Output: single mV value
+  # take mean vs. median of T-P intervals?
+  
+  if (sum(annotations == 1) > 0 & sum(annotations == 3) > 0) {
+    pwaves <- make_wave_table(annotations, wave_value = 1)
+    twaves <- make_wave_table(annotations, wave_value = 3)
+  } else if (sum(annotations == 3) > 0 & sum(annotations == 2)) {
+    # If there are no p-waves, but there are t-waves, find T-QRS interval:
+    twaves <- make_wave_table(annotations, wave_value = 3)
+    # print(paste("No pwaves found. Using T-R interval for isoelec point"))
+    pwaves <- make_wave_table(annotations, wave_value = 2)
+    pwaves$wave_type <- "p"
+  } else {
+    # If no t-waves, find median of ECG:
+    warning("No twaves found. Using median value for isoelec point")
+    return(median(signal))
+    break
+  }
+  
+  combined <- rbind(pwaves,twaves)
+  combined <- combined[order(combined$wave_on),]
+  
+  
+  isoelectric_line <- array(0,length(unique(combined$sample)))
+  for (i in 1:length(unique(combined$sample))) {
+    # for each unique sample
+    sample_table <- combined[combined$sample == i,]
+    p_ind <- which(sample_table$wave_type == "p")
+    
+    # skip first p-wave if there's no preceeding t-wave:
+    if (p_ind[1] == 1) {
+      start <- 2
+      
+      # If there's only one P-wave, which is the first wave in the ECG:
+      if (length(p_ind) < 2) {
+        isoelectric_line[i] <- median(signal)
+        break
+      }
+    } else{
+      start <- 1
+    }
+    
+    # build array of p-t interval points
+    pt_ind <- c()
+    for (j in start:length(p_ind)) {
+      if (sample_table$wave_type[p_ind[j] - 1] == "t") {
+        new_pt_ind <- sample_table$wave_off[p_ind[j] - 1] : sample_table$wave_on[p_ind[j]]
+        pt_ind <- c(pt_ind,new_pt_ind)
+      }
+    }
+    
+    # In the rare case that there are p and t waves, but not in sequential order,
+    # find median of signal:
+    if (length(pt_ind) == 0) {
+      isoelectric_line[i] <- median(signal)
+    } else {
+      isoelectric_line[i] <- mean(signal[pt_ind])
+    }
+  }
+  
+  
+  
+  return(isoelectric_line)
+  
+  # for each p wave, find each which is preceeded by t wave
+  # of those, find T-P interval 
+  
+  # find which p waves are preceeded by t waves
+  
+  
+  # make wavetable of just p and t waves
+  # sort into time order
+  # find indices which switch from t to p wave
+  # find average/median of the 0 waves contained within those indices^
+  
+  
+}
+
+
+
+# Wave Table --------------------------------------------------------------
+make_wave_table <- function(annotations,  wave_value) {
+  # Gives table of specified on/offset times for any wave- P/QRS/T 
+  # Multi-sample input handling using "sample" column
+  
+  # Could include time values, in addition to indices
+  if (is.vector(annotations) == TRUE) {
+    annotations <- matrix(annotations, nrow = 1)
+  }
+  
+  wave_classes <- c(0,"p","N","t")
+  
+  wave_on <- c()
+  wave_off <- c()
+  sample <- c()
+  wave_type <- c()
+  
+  for (i in 1:dim(annotations)[[1]]) {
+    wave_cluster <-  which(annotations[i, ] == wave_value)
+    if (length(wave_cluster) == 0) {
+      wave_type = c(wave_type, NA)
+      wave_on <- c(wave_on, NA)
+      wave_off <- c(wave_off, NA)
+      sample <- c(sample, i)
+      break
+    }
+    
+    change <- (wave_cluster[-1] - wave_cluster[1:(length(wave_cluster) - 1)])
+    
+    wave_on <- c(wave_on, wave_cluster[1])
+    wave_on <- c(wave_on, wave_cluster[which(change != 1) + 1])
+    
+    wave_off <- c(wave_off, wave_cluster[which(change != 1)])
+    wave_off <- c(wave_off, wave_cluster[length(wave_cluster)])
+    
+    sample <- c(sample, array(i, sum(change != 1) + 1))
+    
+    wave_type <- c(wave_type,array(wave_classes[wave_value+1],(length(wave_on) - length(wave_type))))
+    
+  }
+  
+  
+  # wave_type <- array(wave_classes[wave_value+1],length(wave_on))
+  
+  wave_table <- data.frame(wave_type = wave_type, wave_on = wave_on, wave_off = wave_off, sample = sample)
+  
+  return(wave_table)
+}
