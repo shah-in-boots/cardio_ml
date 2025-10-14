@@ -26,3 +26,8 @@ annotator_prep_functions.R: Contains functions for creating training and testing
         	list of:
             	training/testing ECG signal / annotations, in correct format for ML input
             	training/testing samples: LUDB samples used in each set. Largely for reference, usually not needed
+
+annotator_analysis.R: script to predict and analyze annotations for the uih_ecg_supp.RData dataset. 
+	The best model for each 12 models are automatically chosen (using the row numbers of the model_log).
+	The ultimate input is a matrix of size [number_of_samples by 5000]
+	Analysis consists of comparison to rules-based Pan-Tompkins method
