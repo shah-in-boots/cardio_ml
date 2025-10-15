@@ -1,4 +1,5 @@
-# Based on 'generate_uih_test_ecgs.R'
+# Based on 'generate_uih_test_ecgs.R'. 
+# Now included in annotator_prep_functions
 
 # Pick sinus samples
 library(fs)
@@ -19,7 +20,8 @@ wfdb_log <- read.csv(wfdb_path)
 base_path <-  "/mmfs1/projects/cardio_darbar_chi/common/"
 
 # Generate random samples -----------------------------------------------------
-size <- 100
+size <- 10
+dx_pattern <- 'Atrial fib|Afib'#'Sinus'
 
 dir.create('temp')
 uih_ecgs <- list(NA,c(size))
@@ -38,7 +40,7 @@ while (row <= size) {
   diagnosis <- xml_text(xml_find_all(xml, ".//DiagnosisStatement"))
   
   # Check if sinus rhythm
-  if (any(grepl(diagnosis,pattern='Sinus'))) {
+  if (any(grepl(diagnosis,pattern=dx_pattern))) {
     test <- read_wfdb(record = file, record_dir = dir)
     sig <- test$signal$I
     # Check if ECG is 500 Hz sampling
@@ -66,9 +68,9 @@ while (row <= size) {
     print(paste0('Added: ',row,', Iterated thru: ', counter))
   }
 }
+unlink("temp")
+uih_ecgs_supp <- uih_ecgs
 
 save_path <- '/mmfs1/projects/cardio_darbar_chi/common/cohorts/wes_ml/annotator_models/uih_ecgs_supp.RData'
-uih_ecgs_supp <- uih_ecgs
 save(uih_ecgs_supp,file = save_path)
 
-unlink("temp")

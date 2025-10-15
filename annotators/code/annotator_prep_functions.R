@@ -1335,3 +1335,152 @@ make_wave_table <- function(annotations,  wave_value) {
   
   return(wave_table)
 }
+
+# Generate random ECGs ----------------------------------------------------
+generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
+  library(fs)
+  library(EGM)
+  library(stringr)
+  library(XML)
+  library(xml2)
+  library(dplyr)
+  options(wfdb_path = '/mmfs1/home/dseaney2/wfdb/bin')
+  # source('../../ECG Segmentation/code/cluster_functions.R') # unused?
+  
+  muse_path = '/mmfs1/projects/cardio_darbar_chi/common/data/muse/muse.log'
+  muse_log <- read.csv(muse_path)
+  
+  wfdb_path = '/mmfs1/projects/cardio_darbar_chi/common/data/wfdb/wfdb.log'
+  wfdb_log <- read.csv(wfdb_path) 
+  
+  base_path <-  "/mmfs1/projects/cardio_darbar_chi/common/"
+  
+  temp_folder_name <- 'temp_ecg_generator'
+  dir.create(temp_folder_name)
+  uih_ecgs <- list(NA,c(size))
+  
+  counter <- 1
+  row <- 1
+  while (row <= size) {
+    idx <- sample(1:nrow(wfdb_log), 1, replace = FALSE)
+    
+    
+    dir <- fs::path(base_path,dirname(wfdb_log$PATH[idx]))
+    file <- wfdb_log$FILE_NAME[idx]
+    
+    muse_idx <- which((muse_log$FILE_NAME == wfdb_log$FILE_NAME[idx]))
+    xml <- read_xml(fs::path(base_path, dirname(muse_log$PATH[muse_idx]), muse_log$FILE_NAME[muse_idx],ext = 'xml'))
+    diagnosis <- xml_text(xml_find_all(xml, ".//DiagnosisStatement"))
+    
+    # Check if sinus rhythm
+    if (any(grepl(diagnosis,pattern=dx_pattern))) {
+      test <- read_wfdb(record = file, record_dir = dir)
+      sig <- test$signal$I
+      # Check if ECG is 500 Hz sampling
+      if (length(sig) == 5000) {
+        # Need to move ecgpuwave file to same folder as header and data file
+        file.copy(from = fs::path(dir,file,ext='hea'), to = fs::path(temp_folder_name))
+        file.copy(from = fs::path(dir,file,ext='dat'), to = fs::path(temp_folder_name))
+        
+        # Copy ecgpuwave ECG
+        ecgpuwave_dir <- sub("wfdb", "ecgpuwave", dir)
+        file.copy(from = fs::path(ecgpuwave_dir,file,ext='ecgpuwave'), to = fs::path(temp_folder_name))
+        
+        # Read ECG 
+        wfdb <- read_wfdb(record = file, record_dir = temp_folder_name, annotator = 'ecgpuwave')
+        uih_ecgs[row] <- list(wfdb)
+        
+        row <- row+1
+        file.remove(list.files(temp_folder_name, full.names=TRUE))
+      }
+    }
+    
+    counter <- counter+1
+    
+    if (!row %% 10) {
+      print(paste0('Added: ',row,', Iterated thru: ', counter))
+    }
+  }
+  unlink("temp")
+  return(uih_ecgs)
+}
+
+
+
+# Predict -----------------------------------------------------------------
+predict_ecgs <- function(input,
+                         lead=1,
+                         model_number,
+                         input_class='wfdb',
+                         number_of_derivs=2,
+                         filter=TRUE,
+                         normalize=TRUE,
+                         fill_wave_gaps=TRUE,
+                         wave_gap_threshold=20) {
+  #' @param input: for input_class = 'wfdb': variable is of class 'list', where one index is list of **wfdb** format
+  #'               for input_class = 'array' (or unlabeled): variable is an array, where columns are for the sample number, and rows are for each time step
+  #' 
+  #' @param lead: integer, where they follow the order of 'leads', see below
+  #' 
+  #' @param model_number: model number from the model_log.RData file, where the number represents a row in the file.
+  #'  best models for each lead: 
+  #'    c(861, 856, 851,  846,  836,  841,  826, 821, 866, 871, 876, 881)
+  #'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  #' 
+  #' @param number_of_derivs: number of derivatives included, used by some models. Can verify with model_log for each model
+  #' 
+  #' @param fill_wave_gaps: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers
+  
+  library(keras)
+  load('../models/model_log.RData')
+
+  leads <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  
+  # Change ECG input from list to array
+  if (input_class == 'wfdb') {
+    input <- do.call(rbind, lapply(1:length(input), function(idx)
+      input[[idx]]$signal[[leads[lead]]]))
+  }
+  
+  # Filter
+  if (filter) {
+    for (i in 1:nrow(input)) {
+      input <- input(uih_samples[i, ])
+    }
+  }
+  
+  # Normalize from 0 to 100
+  if (normalize) {
+    for (i in 1:nrow(input)) {
+      input[i, ] <- (input[i, ] - min(input[i, ])) / (max(input[i, ]) - min(input[i, ])) * 100
+    }
+  }
+  
+  # Add derivatives if needed
+  if (number_of_derivs > 0) {
+    input_old <- input
+    input <- array(NA, c(dim(input_old), number_of_derivs + 1))
+    for (i in 1:nrow(input)) {
+      input[i, , ] <- add_derivs(signal = input_old[i, ], number_of_derivs = number_of_derivs)
+    }
+  }
+  
+  # Predict
+  model <- load_model_tf(paste0('../models/', model_log$name[model_number], '.h5'))
+  predictions <- model %>% predict(input)
+  predictions_integer <- array(0, c(nrow(predictions), ncol(predictions)))
+  for (i in 1:nrow(predictions)) {
+    predictions_integer[i, ] <- max.col(predictions[i, , ])
+  }
+  #convert from dimension value 1,2,3,4 to 0,1,2,3
+  predictions_integer <- predictions_integer - 1
+  
+  # Fill gaps as needed
+  if (fill_wave_gaps) {
+    for (i in 1:nrow(predictions_integer)) {
+      predictions_integer[i, ] <- fill_wave_gaps(predictions_integer[i, ], wave_gap_threshold)
+    }
+  }
+  
+  return(predictions_integer)
+}
