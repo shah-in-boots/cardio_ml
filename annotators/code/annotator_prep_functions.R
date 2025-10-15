@@ -1410,7 +1410,7 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 # Predict -----------------------------------------------------------------
 predict_ecgs <- function(input,
                          lead=1,
-                         model_number,
+                         model_number='best',
                          input_class='wfdb',
                          number_of_derivs=2,
                          filter=TRUE,
@@ -1426,26 +1426,36 @@ predict_ecgs <- function(input,
   #'  best models for each lead: 
   #'    c(861, 856, 851,  846,  836,  841,  826, 821, 866, 871, 876, 881)
   #'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  #'    If model_number is set to 'best', the function will use the requested lead to pick the best model for that lead
   #' 
   #' @param number_of_derivs: number of derivatives included, used by some models. Can verify with model_log for each model
   #' 
   #' @param fill_wave_gaps: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers
+  #' 
+  #' @return ML predictions for a single lead. This can be in wfdb format, or matrix format ([number_of_samples x time_steps]). If wfdb format, you may simply loop the function over all 12 leads, and it will add automatically
+  
+  # Improvements to impliment: 
+    # automatically detect if in wfdb format (ie list form) vs. matrix format --> eliminate need for 'input_class' parameter
+    # automatically determine number of derivatives needed for the requested model --> eliminate "number_of_derivs" parameter
+  
   
   library(keras)
   load('../models/model_log.RData')
 
   leads <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  lead_name <- leads[lead]
   
   # Change ECG input from list to array
   if (input_class == 'wfdb') {
+    output <- input # retain signal values for output, if in wfdb format
     input <- do.call(rbind, lapply(1:length(input), function(idx)
-      input[[idx]]$signal[[leads[lead]]]))
+      input[[idx]]$signal[[lead_name]]))
   }
   
   # Filter
   if (filter) {
     for (i in 1:nrow(input)) {
-      input <- input(uih_samples[i, ])
+      input <- ecg_filter(input[i, ])
     }
   }
   
@@ -1465,6 +1475,12 @@ predict_ecgs <- function(input,
     }
   }
   
+  # If model_number is defined as 'best', pick the best performing model for the specified lead:
+  if (model_number == 'best') {
+    best_models <-  c(861, 856, 851, 846, 836, 841, 826, 821, 866, 871, 876, 881)
+    model_number <- best_models[lead]
+  }
+  
   # Predict
   model <- load_model_tf(paste0('../models/', model_log$name[model_number], '.h5'))
   predictions <- model %>% predict(input)
@@ -1482,5 +1498,19 @@ predict_ecgs <- function(input,
     }
   }
   
-  return(predictions_integer)
+  # Transform to wfdb format, if input is wfdb format
+  if (input_class == 'wfdb') {
+    for (i in seq_len(nrow(predictions_integer))) {
+      
+      # Ensure annotation slot exists
+      if (is.null(output[[i]]$annotation)) {
+        output[[i]]$annotation <- list()
+      }
+      # Create dataframe for this lead
+      output[[i]]$annotation[[lead_name]] <- ann_continuous2wfdb(predictions_integer[i, ])
+    }
+    return(output)
+  } else {
+    return(predictions_integer)
+  }
 }
