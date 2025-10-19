@@ -1409,18 +1409,18 @@ generate_ecgs <- function(size=10,dx_pattern='sinus|afib') {
 
 # Predict -----------------------------------------------------------------
 predict_ecgs <- function(input,
-                         lead=1,
+                         lead_number='all',
                          model_number='best',
+                         model_log_path='../models/model_log.RData',
+                         model_folder_path='../models/',
                          input_class='wfdb',
-                         number_of_derivs=2,
                          filter=TRUE,
-                         normalize=TRUE,
-                         fill_wave_gaps=TRUE,
+                         do_fill_wave_gaps=TRUE,
                          wave_gap_threshold=20) {
   #' @param input: for input_class = 'wfdb': variable is of class 'list', where one index is list of **wfdb** format
   #'               for input_class = 'array' (or unlabeled): variable is an array, where columns are for the sample number, and rows are for each time step
   #' 
-  #' @param lead: integer, where they follow the order of 'leads', see below
+  #' @param lead_number: integer, where they follow the order of 'leads', see below. If set to lead_number = 'all', all 12 leads will be predicted
   #' 
   #' @param model_number: model number from the model_log.RData file, where the number represents a row in the file.
   #'  best models for each lead: 
@@ -1428,89 +1428,107 @@ predict_ecgs <- function(input,
   #'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
   #'    If model_number is set to 'best', the function will use the requested lead to pick the best model for that lead
   #' 
-  #' @param number_of_derivs: number of derivatives included, used by some models. Can verify with model_log for each model
-  #' 
-  #' @param fill_wave_gaps: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers
+  #' @param do_fill_wave_gaps: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers
   #' 
   #' @return ML predictions for a single lead. This can be in wfdb format, or matrix format ([number_of_samples x time_steps]). If wfdb format, you may simply loop the function over all 12 leads, and it will add automatically
   
   # Improvements to impliment: 
     # automatically detect if in wfdb format (ie list form) vs. matrix format --> eliminate need for 'input_class' parameter
-    # automatically determine number of derivatives needed for the requested model --> eliminate "number_of_derivs" parameter
-  
   
   library(keras)
-  load('../models/model_log.RData')
+  load(model_log_path)
 
-  leads <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
-  lead_name <- leads[lead]
+  lead_name_list <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
   
-  # Change ECG input from list to array
+  if (any(lead_number == 'all')) {
+    lead_number <- 1:12
+  }
+  
+    
   if (input_class == 'wfdb') {
     output <- input # retain signal values for output, if in wfdb format
-    input <- do.call(rbind, lapply(1:length(input), function(idx)
-      input[[idx]]$signal[[lead_name]]))
-  }
-  
-  # Filter
-  if (filter) {
-    for (i in 1:nrow(input)) {
-      input <- ecg_filter(input[i, ])
-    }
-  }
-  
-  # Normalize from 0 to 100
-  if (normalize) {
-    for (i in 1:nrow(input)) {
-      input[i, ] <- (input[i, ] - min(input[i, ])) / (max(input[i, ]) - min(input[i, ])) * 100
-    }
-  }
-  
-  # Add derivatives if needed
-  if (number_of_derivs > 0) {
-    input_old <- input
-    input <- array(NA, c(dim(input_old), number_of_derivs + 1))
-    for (i in 1:nrow(input)) {
-      input[i, , ] <- add_derivs(signal = input_old[i, ], number_of_derivs = number_of_derivs)
-    }
-  }
-  
-  # If model_number is defined as 'best', pick the best performing model for the specified lead:
-  if (model_number == 'best') {
-    best_models <-  c(861, 856, 851, 846, 836, 841, 826, 821, 866, 871, 876, 881)
-    model_number <- best_models[lead]
-  }
-  
-  # Predict
-  model <- load_model_tf(paste0('../models/', model_log$name[model_number], '.h5'))
-  predictions <- model %>% predict(input)
-  predictions_integer <- array(0, c(nrow(predictions), ncol(predictions)))
-  for (i in 1:nrow(predictions)) {
-    predictions_integer[i, ] <- max.col(predictions[i, , ])
-  }
-  #convert from dimension value 1,2,3,4 to 0,1,2,3
-  predictions_integer <- predictions_integer - 1
-  
-  # Fill gaps as needed
-  if (fill_wave_gaps) {
-    for (i in 1:nrow(predictions_integer)) {
-      predictions_integer[i, ] <- fill_wave_gaps(predictions_integer[i, ], wave_gap_threshold)
-    }
-  }
-  
-  # Transform to wfdb format, if input is wfdb format
-  if (input_class == 'wfdb') {
-    for (i in seq_len(nrow(predictions_integer))) {
-      
-      # Ensure annotation slot exists
-      if (is.null(output[[i]]$annotation)) {
-        output[[i]]$annotation <- list()
-      }
-      # Create dataframe for this lead
-      output[[i]]$annotation[[lead_name]] <- ann_continuous2wfdb(predictions_integer[i, ])
-    }
-    return(output)
+    output <- lapply(ecgs, function(x) { # remove any pre-existing annotation
+      x$annotation <- NULL
+    })
+    
   } else {
-    return(predictions_integer)
+    output <- array(NA,c(length(input),length(input[[1]]$signal[[1]]),length(lead_number)))
   }
+    
+  counter <- 1
+  for (lead in lead_number) {
+    lead_name <- lead_name_list[lead]
+    
+    # If model_number is defined as 'best', pick the best performing model for the specified lead:
+    if (model_number == 'best') {
+      best_models <-  c(861, 856, 851, 846, 836, 841, 826, 821, 866, 871, 876, 881)
+      model_number <- best_models[lead]
+    }
+    
+    # Change ECG input from list to array
+    
+    input_signal <- do.call(rbind, lapply(1:length(input), function(idx)
+      input[[idx]]$signal[[lead_name]]))
+    
+    # Filter
+    if (filter) {
+      for (i in 1:nrow(input_signal)) {
+        input_signal[i,] <- ecg_filter(input_signal[i, ])
+      }
+    }
+    
+    # Normalize from 0 to 100
+    if (model_log$normalize[model_number]) {
+      for (i in 1:nrow(input_signal)) {
+        input_signal[i, ] <- (input_signal[i, ] - min(input_signal[i, ])) / (max(input_signal[i, ]) - min(input_signal[i, ])) * 100
+      }
+    }
+    
+    # Add derivatives if needed
+    number_of_derivs <- model_log$derivs[model_number]
+    if (number_of_derivs > 0) {
+      input_old <- input_signal
+      input_signal <- array(NA, c(dim(input_old), number_of_derivs + 1))
+      for (i in 1:nrow(input_signal)) {
+        input_signal[i, , ] <- add_derivs(signal = input_old[i, ], number_of_derivs = number_of_derivs)
+      }
+    }
+    
+    # Predict
+    model <- load_model_tf(paste0(model_folder_path, model_log$name[model_number], '.h5'))
+    predictions <- model %>% predict(input_signal)
+    predictions_integer <- array(0, c(nrow(predictions), ncol(predictions)))
+    for (i in 1:nrow(predictions)) {
+      predictions_integer[i, ] <- max.col(predictions[i, , ])
+    }
+    #convert from dimension value 1,2,3,4 to 0,1,2,3
+    predictions_integer <- predictions_integer - 1
+    
+    # Fill gaps as needed
+    if (do_fill_wave_gaps) {
+      for (i in 1:nrow(predictions_integer)) {
+        predictions_integer[i, ] <- fill_wave_gaps(predictions_integer[i, ], wave_gap_threshold)
+      }
+    }
+    
+    # Transform to wfdb format, if input is wfdb format
+    if (input_class == 'wfdb') {
+      for (i in seq_len(nrow(predictions_integer))) {
+        
+        # Ensure annotation slot exists
+        if (is.null(output[[i]]$annotation)) {
+          output[[i]]$annotation <- list()
+        }
+        # Create dataframe for this lead
+        output[[i]]$annotation[[lead_name]] <- ann_continuous2wfdb(predictions_integer[i, ])
+      }
+    } else {
+      output[,,counter] <- predictions_integer
+    }
+    
+    print(paste('Finished lead',lead_name_list[lead]))
+    counter <- counter+1
+  }
+  
+  return(output)
 }
