@@ -1446,11 +1446,11 @@ predict_ecgs <- function(input,
   
     
   if (input_class == 'wfdb') {
-    output <- input # retain signal values for output, if in wfdb format
-    output <- lapply(ecgs, function(x) { # remove any pre-existing annotation
+    # output <- input # retain signal values for output, if in wfdb format
+    output <- lapply(input, function(x) { # remove any pre-existing annotation
       x$annotation <- NULL
+      x
     })
-    
   } else {
     output <- array(NA,c(length(input),length(input[[1]]$signal[[1]]),length(lead_number)))
   }
@@ -1532,3 +1532,10 @@ predict_ecgs <- function(input,
   
   return(output)
 }
+
+
+# check annotations -------------------------------------------------------
+
+# Remove waves less than ___ ms 
+# Check for QRS --> check for P, T waves
+# signal confidence?
