@@ -873,6 +873,24 @@ fill_wave_gaps <- function(annotation = predictions_integer, max_gap = 10) {
   return(annotation)
 }
 
+remove_short_waves <- function(annotation, max_wave_length=10) {
+  # annotation: vector of integers, not in wfdb format
+  
+  # Run-length encoding
+  rle_obj <- rle(annotation)
+  
+  # Identify runs that are P/QRS/T (1,2,3) AND shorter than threshold
+  too_short <- rle_obj$values %in% c(1, 2, 3) & rle_obj$lengths < max_wave_length
+  
+  # Replace those runs with 0
+  rle_obj$values[too_short] <- 0
+  
+  # Reconstruct the vector
+  cleaned <- inverse.rle(rle_obj)
+  return(cleaned)
+}
+
+
 check_ann_prog_RPeaks <- function(signal,
                                   predictions_integer, 
                                   pr_tolerance = 200,
@@ -1043,7 +1061,7 @@ check_ann_prog_RPeaks <- function(signal,
 plot_func <- function(y, 
                       color = 0,
                       linewidth=0.5, 
-                      pointsize = 1.5, 
+                      pointsize = 0.5, 
                       ylim = NULL, 
                       plotly = 'yes', 
                       x) {
@@ -1051,7 +1069,13 @@ plot_func <- function(y,
   # plotly 
   library(ggplot2)
   library(plotly)
-  color <- c(color)
+
+  # If annotations are wfdb format, change to vector format
+  if (any(class(color) == "annotation_table")) {
+    color <- ann_wfdb2continuous2(color)
+  }
+  
+  
   y <- c(y)
   
   color[color == 1] <- 'p'
@@ -1083,12 +1107,22 @@ plot_func <- function(y,
 plot_func2 <- function(y, 
                        color = 0,
                        linewidth = 0.5, 
-                       pointsize = 1.5, 
+                       pointsize = 0.5, 
                        ylim = NULL, 
                        plotly = 'yes',
-                       legend = TRUE) {
+                       legend = TRUE,
+                       x = 'index') {
+  #' @param x: can either be 'sec' for seconds (time is from 0 to 10 sec on standard ECG). OR index, for index by index
   library(ggplot2)
   library(plotly)
+  
+  # If annotations are wfdb format, change to vector format
+  if (any(class(color) == "annotation_table")) {
+    color <- ann_wfdb2continuous2(color)
+  }
+  
+  # If signal is an array (ie dim 1 x 5000), reduce to vector 
+  y <- c(y) 
   
   # Map numeric codes to labels
   color[color == 0] <- '0'
@@ -1097,7 +1131,11 @@ plot_func2 <- function(y,
   color[color == 3] <- 'T'
   color[color == 4] <- 'V'
   
-  x <- seq_along(y) / 500
+  if (x == 'index') {
+    x <-  seq_along(y)
+  } else if (x == 'sec') {
+    x <- seq_along(y) / 500
+  }
   
   frame <- data.frame(Time = x, Signal = y, Wave = color)
   
@@ -1132,13 +1170,12 @@ build_bilstm_cnn <- function(bilstm_layers,
                              filters,
                              activation = 'softmax',
                              num_classes = num_classes,
-                             model_name_path) {
+                             input_length = 5000) {
   library(keras)
   library(tensorflow)
   
   # Model parameters
   bilstm_layers <- bilstm_layers         # LSTM units
-  input_length <- 5000                # number of time steps in the ECG
   num_channels <- number_of_derivs+1  # single lead input
   mask_value <- out$mask_value        # if you wish to mask zero values in the input
   kernel <- kernel                    # size of kernel for each convolutional layer
@@ -1203,6 +1240,91 @@ build_bilstm_cnn <- function(bilstm_layers,
 }
 
 
+
+# bilstm_cnn_branched model -----------------------------------------------
+
+
+build_bilstm_cnn_branched <- function(bilstm_layers,
+                                      number_of_derivs,
+                                      mask_value,
+                                      kernels = c(7, 31, 81),
+                                      branch_filters = c(32, 32, 32),
+                                      proj_filters = 128,
+                                      activation = 'softmax',
+                                      num_classes,
+                                      input_length = 5000) {
+  library(keras)
+  library(tensorflow)
+  
+  num_channels <- number_of_derivs + 1
+  
+  inputs <- layer_input(shape = c(input_length, num_channels), dtype = 'float32') %>%
+    layer_masking(mask_value = mask_value)
+  
+  # Branch A: small kernel (local edges and peaks)
+  branch_a <- inputs %>%
+    layer_conv_1d(filters = branch_filters[1],
+                  kernel_size = kernels[1],
+                  padding = 'same',
+                  activation = 'relu')
+  
+  # Branch B: medium kernel (morphology)
+  branch_b <- inputs %>%
+    layer_conv_1d(filters = branch_filters[2],
+                  kernel_size = kernels[2],
+                  padding = 'same',
+                  activation = 'relu')
+  
+  # Branch C: large kernel (whole-wave context)
+  branch_c <- inputs %>%
+    layer_conv_1d(filters = branch_filters[3],
+                  kernel_size = kernels[3],
+                  padding = 'same',
+                  activation = 'relu')
+  
+  # Optionally include a pooled branch for even coarser context
+  branch_pool <- inputs %>%
+    layer_max_pooling_1d(pool_size = 4, padding = 'same') %>%
+    layer_conv_1d(filters = proj_filters / 4,
+                  kernel_size = 11,
+                  padding = 'same',
+                  activation = 'relu') %>%
+    layer_upsampling_1d(size = 4)
+  
+  # Concatenate multi-scale features
+  multi_scale <- layer_concatenate(list(branch_a, branch_b, branch_c, branch_pool), axis = -1)
+  
+  # Projection conv to mix channels and control dimensionality
+  projected <- multi_scale %>%
+    layer_conv_1d(filters = proj_filters,
+                  kernel_size = 1,
+                  padding = 'same',
+                  activation = 'relu') %>%
+    layer_batch_normalization()
+  
+  # Optional light downsampling to reduce sequence length for LSTM compute
+  # Keep stride = 1 for per-sample output alignment; use pooling only if you upsample later
+  # Here we keep time resolution and let the BiLSTM operate on full-resolution features
+  lstm_block <- projected %>%
+    bidirectional(layer_lstm(units = bilstm_layers,
+                             return_sequences = TRUE,
+                             activation = 'tanh'))
+  
+  # If pooling was used earlier and time dimension was reduced, upsample back here
+  # For this architecture we preserve time dimension and directly predict per time step
+  outputs <- lstm_block %>%
+    layer_dense(units = num_classes, activation = activation, name = 'predictions')
+  
+  model <- keras_model(inputs = inputs, outputs = outputs, name = 'multiscale_cnn_bilstm_ecg')
+  
+  model %>% compile(
+    optimizer = optimizer_adam(),
+    loss = 'sparse_categorical_crossentropy',
+    metrics = c('accuracy')
+  )
+  
+  return(model)
+}
 
 # Find Isoelectric -------------------------------------------------------------
 isoelec_find <- function(signal,annotations) {
@@ -1415,8 +1537,12 @@ predict_ecgs <- function(input,
                          model_folder_path='../models/',
                          input_class='wfdb',
                          filter=TRUE,
+                         do_predictionInteger_threshold = TRUE,
+                         predictionInteger_threshold=0.5,
                          do_fill_wave_gaps=TRUE,
-                         wave_gap_threshold=20) {
+                         wave_gap_threshold=20,
+                         do_remove_short_waves=TRUE,
+                         short_wave_threshold=10) {
   #' @param input: for input_class = 'wfdb': variable is of class 'list', where one index is list of **wfdb** format
   #'               for input_class = 'array' (or unlabeled): variable is an array, where columns are for the sample number, and rows are for each time step
   #' 
@@ -1427,10 +1553,19 @@ predict_ecgs <- function(input,
   #'    c(861, 856, 851,  846,  836,  841,  826, 821, 866, 871, 876, 881)
   #'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
   #'    If model_number is set to 'best', the function will use the requested lead to pick the best model for that lead
+  #'    
+  #' @param do_predictionInteger_threshold: method used to convert raw ML output probabilities to integers representing wave values
+  #'    If true, a predictionInteger_threshold is required (default of 0.5)
+  #'    If false, an absolute method will be used- take the greatest probability wave (or no wave) from each time step. 
+  #'        Roughly equivalent to a threshold method with a threshold value of 0.5
   #' 
   #' @param do_fill_wave_gaps: if a single wave (ie P wave) has a gap of less than wave_gap_threshold, fill the gap with P wave markers
+  #' @param wave_gap_threhold: see above
   #' 
-  #' @return ML predictions for a single lead. This can be in wfdb format, or matrix format ([number_of_samples x time_steps]). If wfdb format, you may simply loop the function over all 12 leads, and it will add automatically
+  #' @param do_remove_short_waves: if there is a short wave (ie P wave) that is less than short_wave_threshold (ie 10 indices), remove the wave
+  #' @param short_wave_threshold: see above
+  #' 
+  #' @return ML predictions for all requested leads. This can be in wfdb format (recommended), or matrix format ([number_of_samples x time_steps]). If wfdb format, you may simply loop the function over all 12 leads, and it will add automatically
   
   # Improvements to impliment: 
     # automatically detect if in wfdb format (ie list form) vs. matrix format --> eliminate need for 'input_class' parameter
@@ -1497,12 +1632,22 @@ predict_ecgs <- function(input,
     # Predict
     model <- load_model_tf(paste0(model_folder_path, model_log$name[model_number], '.h5'))
     predictions <- model %>% predict(input_signal)
-    predictions_integer <- array(0, c(nrow(predictions), ncol(predictions)))
-    for (i in 1:nrow(predictions)) {
-      predictions_integer[i, ] <- max.col(predictions[i, , ])
+    
+    # Convert probabilities to integer values - either use threshold, or greatest probability
+    if (do_predictionInteger_threshold) {
+      # Treshold method:
+      predictions_integer <- predictions2integer_threshold(predictions, 
+                                                           threshold = predictionInteger_threshold)
+    } else {
+      # Absolute (greatest probability) method:
+      predictions_integer <- array(0, c(nrow(predictions), ncol(predictions)))
+      for (i in 1:nrow(predictions)) {
+        predictions_integer[i, ] <- max.col(predictions[i, , ])
+      }
+      # convert from dimension value 1,2,3,4 to 0,1,2,3
+      predictions_integer <- predictions_integer - 1
     }
-    #convert from dimension value 1,2,3,4 to 0,1,2,3
-    predictions_integer <- predictions_integer - 1
+    
     
     # Fill gaps as needed
     if (do_fill_wave_gaps) {
@@ -1510,6 +1655,15 @@ predict_ecgs <- function(input,
         predictions_integer[i, ] <- fill_wave_gaps(predictions_integer[i, ], wave_gap_threshold)
       }
     }
+    
+    # Remove short waves as needed
+    if (do_remove_short_waves) {
+      for (i in 1:nrow(predictions_integer)) {
+        predictions_integer[i, ] <- remove_short_waves(predictions_integer[i, ], max_wave_length = short_wave_threshold)
+      }
+    }
+    
+    # Remove waves less than threshold
     
     # Transform to wfdb format, if input is wfdb format
     if (input_class == 'wfdb') {
@@ -1534,8 +1688,140 @@ predict_ecgs <- function(input,
 }
 
 
+predict_ecgs_raw <- function(input,
+                             lead_number='all',
+                             model_number='best',
+                             model_log_path='../models/model_log.RData',
+                             model_folder_path='../models/',
+                             input_class='wfdb',
+                             filter=TRUE) {
+  #' @param input: for input_class = 'wfdb': variable is of class 'list', where one index is list of **wfdb** format
+  #'               for input_class = 'array' (or unlabeled): variable is an array, where columns are for the sample number, and rows are for each time step
+  #' 
+  #' @param lead_number: integer, where they follow the order of 'leads', see below. If set to lead_number = 'all', all 12 leads will be predicted
+  #' 
+  #' @param model_number: model number from the model_log.RData file, where the number represents a row in the file.
+  #'  best models for each lead: 
+  #'    c(861, 856, 851,  846,  836,  841,  826, 821, 866, 871, 876, 881)
+  #'    c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  #'    If model_number is set to 'best', the function will use the requested lead to pick the best model for that lead
+  #' 
+  #' @return raw ML prediction probabilities
+  
+  library(keras)
+  load(model_log_path)
+  
+  lead_name_list <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
+  
+  if (any(lead_number == 'all')) {
+    lead_number <- 1:12
+  }
+  
+  # Output: number_of_samples by sample_length by 4_classes (P/QRS/T) by number_of_leads:
+  output <- array(NA,c(length(input),length(input[[1]]$signal[[1]]),4,length(lead_number)))
+  
+  counter <- 1
+  for (lead in lead_number) {
+    lead_name <- lead_name_list[lead]
+    
+    # If model_number is defined as 'best', pick the best performing model for the specified lead:
+    if (model_number == 'best') {
+      best_models <-  c(861, 856, 851, 846, 836, 841, 826, 821, 866, 871, 876, 881)
+      model_number <- best_models[lead]
+    }
+    
+    # Change ECG input from list to array
+    input_signal <- do.call(rbind, lapply(1:length(input), function(idx)
+      input[[idx]]$signal[[lead_name]]))
+    
+    # Filter
+    if (filter) {
+      for (i in 1:nrow(input_signal)) {
+        input_signal[i,] <- ecg_filter(input_signal[i, ])
+      }
+    }
+    
+    # Normalize from 0 to 100
+    if (model_log$normalize[model_number]) {
+      for (i in 1:nrow(input_signal)) {
+        input_signal[i, ] <- (input_signal[i, ] - min(input_signal[i, ])) / (max(input_signal[i, ]) - min(input_signal[i, ])) * 100
+      }
+    }
+    
+    # Add derivatives if needed
+    number_of_derivs <- model_log$derivs[model_number]
+    if (number_of_derivs > 0) {
+      input_old <- input_signal
+      input_signal <- array(NA, c(dim(input_old), number_of_derivs + 1))
+      for (i in 1:nrow(input_signal)) {
+        input_signal[i, , ] <- add_derivs(signal = input_old[i, ], number_of_derivs = number_of_derivs)
+      }
+    }
+    
+    # Predict
+    model <- load_model_tf(paste0(model_folder_path, model_log$name[model_number], '.h5'))
+    predictions <- model %>% predict(input_signal)
+    
+    output[,,,counter] <- predictions
+    # [sample_no x time steps x num_classes x leads]
+    
+    print(paste('Finished lead',lead_name_list[lead]))
+    counter <- counter+1
+  }
+  
+  return(output)
+}
+
+
+# prediction_integer threshold --------------------------------------------
+predictions2integer_threshold <- function(predictions, threshold = 0.5) {
+  # Dimensions
+  n_samples   <- dim(predictions)[1]
+  n_timesteps <- dim(predictions)[2]
+  n_classes   <- dim(predictions)[3]  # should be 4
+  
+  # Initialize output with 0s (or 1s if you want "no wave" as default)
+  predictions_integer <- matrix(0, nrow = n_samples, ncol = n_timesteps)
+  
+  # Loop over samples
+  for (s in 1:n_samples) {
+    # Extract probabilities for this sample: timesteps × classes
+    sample_probs <- predictions[s,,]   # dims: n_timesteps × n_classes
+    
+    # Focus only on classes 2:4 (P, QRS, T)
+    wave_probs <- sample_probs[, 2:4, drop = FALSE]
+    
+    # For each timestep, check which classes exceed threshold
+    above_thresh <- wave_probs > threshold
+    
+    # Count how many classes exceed threshold per timestep
+    n_above <- rowSums(above_thresh)
+    
+    # Case 1: exactly one class above threshold → assign that class (shift by +1 to map 1→2, 2→3, 3→4)
+    one_class_idx <- which(n_above == 1)
+    if (length(one_class_idx) > 0) {
+      class_ids <- apply(above_thresh[one_class_idx, , drop = FALSE], 1, which.max)
+      predictions_integer[s, one_class_idx] <- class_ids + 1
+    }
+    
+    # Case 2: multiple classes above threshold → assign 5 (mixed wave)
+    multi_class_idx <- which(n_above > 1)
+    if (length(multi_class_idx) > 0) {
+      predictions_integer[s, multi_class_idx] <- 5
+    }
+    
+    # Case 3: no class above threshold → leave as 0 
+  }
+  
+  return(predictions_integer)
+}
+
+
+
 # check annotations -------------------------------------------------------
 
 # Remove waves less than ___ ms 
-# Check for QRS --> check for P, T waves
-# signal confidence?
+# Check for QRS --> check for P, T waves. Use detect_QRS
+# signal confidence? 
+# ^ similar to confidence: compare all 12 leads, look for outliers and flag. 
+# score for each wave, each time point. if < 0.25 for a wave, remove.

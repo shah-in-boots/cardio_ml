@@ -5,7 +5,7 @@ library(abind)
 # Input data parameters:
 annotator_style <- 2
 lead <- 7
-rounds <- c(2,4)                    # number of times the dataset is duplicated. 1st index: LUDB set. 2nd index: UIH set.
+rounds <- c(4,8)                    # number of times the dataset is duplicated. 1st index: LUDB set. 2nd index: UIH set.
 max_noise = 0.01 # 0.05, 0.03       # maximum noise that can be introduced to the signal. RECOMMEND: 0.01
 dilate_range <- c(0.03, 0.05)       # factor to compress/dilate
 filter <- FALSE                     # whether to filter the data on input
@@ -17,9 +17,10 @@ number_of_derivs = 2                # number of derivatives to include on input.
 # Model parameters
 input_length <- 5000                # number of time steps in the ECG
 activation <- "softmax"             # final activation for multi-class predictions
-kernel <- c(5,3)                    # size of kernel for each convolutional layer. Base: c(5,3)
-filters <- c(32,64)                 # number of filters for each convolutional layer. Base: 32,64
-model_type <- 'bilstm_cnn_expanded'
+kernel <- c(7, 31, 81)              # size of kernel for each convolutional layer. Base: c(5,3)
+filters <- c(32, 32, 32)            # number of filters for each convolutional layer. For this model type, its the filters for the convolutional layers
+proj_filters <- 128                 # number of filters for the projection layers, which is used after the parallel convolutional layers are combined 
+model_type <- 'bilstm_cnn_branched_expanded'         # expanded: training data includes LUDB and supplemental UIH ECGs
 mask_value <- -1
 
 # Naming
@@ -73,17 +74,19 @@ testing_annotations <- abind(out$testing_annotations,out_uih$testing_annotations
 training_samples <- data.frame(samples = c(out$training_samples,out_uih$training_samples),
                                dataset = c(rep("ludb",length(out$training_samples)),rep("uih",length(out_uih$training_samples))))
 testing_samples <- data.frame(samples = c(out$testing_samples,out_uih$testing_samples),
-                               dataset = c(rep("ludb",length(out$testing_samples)),rep("uih",length(out_uih$testing_samples))))
+                              dataset = c(rep("ludb",length(out$testing_samples)),rep("uih",length(out_uih$testing_samples))))
 # Build model
-model <- build_bilstm_cnn(bilstm_layers = bilstm_layers,
-                          number_of_derivs = number_of_derivs,
-                          mask_value = mask_value,
-                          kernel = kernel, 
-                          filters = filters, 
-                          activation = activation, 
-                          num_classes = num_classes,
-                          model_name_path = model_name_path
-                          )
+model <- build_bilstm_cnn_branched(
+  bilstm_layers = bilstm_layers,
+  number_of_derivs = number_of_derivs,
+  mask_value = mask_value,
+  kernel = kernel,
+  branch_filters = filters,
+  proj_filters = proj_filters,
+  activation = activation,
+  num_classes = num_classes
+)
+
 
 # Define callbacks
 epochs <- max(epochs_to_save)
@@ -167,9 +170,9 @@ for (checkpoint_number in 1:length(epochs_to_save)) {
                                              testing_annotations = testing_annotations[ludb_training_indices,])
   
   confusion_uih <- confusion_analysis(predictions = predictions_integer[uih_training_indices,], 
-                                  actual = testing_annotations[uih_training_indices,])
+                                      actual = testing_annotations[uih_training_indices,])
   wave_counter_uih <- check_ann_prog_ludb_helper(predictions_integer = predictions_integer[uih_training_indices,],
-                                             testing_annotations = testing_annotations[uih_training_indices,])
+                                                 testing_annotations = testing_annotations[uih_training_indices,])
   
   # UIH test samples Analysis (nonlabelled) ---------------------------------
   # note: UIH lead order is AVF AVL AVR. Therefore, use names to match (ie leads[lead] ), **NOT** number (ie lead)

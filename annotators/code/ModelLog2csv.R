@@ -1,4 +1,4 @@
-# write csv ---------------------------------------------------------------
+# data cleaning ---------------------------------------------------------------
 # Info: reads the model_log.RData file. Simplifies it to be used in an excel document for easier viewing
 
 library(dplyr)
@@ -88,7 +88,7 @@ model_log <- model_log %>% rename(p_length = p_wave_length, t_length = t_wave_le
 model_log$p_length <- model_log$p_length / 500 * 1000 # length in ms
 model_log$t_length <- model_log$t_length / 500 * 1000 # length in ms
 
-write.csv(model_log,'../model_log.csv')
+# write.csv(model_log,'../model_log.csv')
 
 
 # full tables -------------------------------------------------------------
