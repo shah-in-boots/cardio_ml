@@ -94,3 +94,24 @@ if (location == 'local') {
 print(idx)
 ann <- ann_continuous2wfdb(predictions2[idx, ])
 # ann[ann$type %in% c('p','N','t'),]
+
+
+# NEW plot (10/23/25) ----------------------------------------------------------------
+
+source('annotator_prep_functions.R')
+load('../models/model_log.RData')
+
+lead <- 4
+leads <-  c("I" ,  "II",  "III", "AVR", "AVL", "AVF", "V1",  "V2",  "V3",  "V4",  "V5",  "V6")
+
+ecgs <- generate_ecgs(20,'sinus')
+ann1 <- predict_ecgs(ecgs,lead_number = lead)
+ann2 <- predict_ecgs(ecgs,lead_number = lead, model_number = 920)
+idx=0
+
+idx=idx+1
+sig <- ecg_filter(ann1[[idx]]$signal[[leads[lead]]])
+plot_func2(sig,ann1[[idx]]$annotation[[leads[lead]]])
+Sys.sleep(1)
+plot_func2(sig,ann2[[idx]]$annotation[[leads[lead]]])
+

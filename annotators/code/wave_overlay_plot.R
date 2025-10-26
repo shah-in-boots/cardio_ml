@@ -10,7 +10,7 @@ ann <- predict_ecgs(ecgs)
 # Combine -----------------------------------------------------------------
 idx <- 4
 lead <- 5
-wave <- 3
+wave <- 1
 
 leads <- c("I", "II", "III", "AVR", "AVL", "AVF", 
            "V1", "V2", "V3", "V4", "V5", "V6")
@@ -132,12 +132,13 @@ calc_entropy <- function(row) {
 library(dplyr)
 load('../models/model_log.RData')
 
-lead <- 7
+lead <- 6
+which(model_log$lead == lead)
 
-uih_conf_indicies <- which(model_log$lead == lead & !is.na(filt$confusion_uih))
-lapply(uih_conf_indicies, function(idx) {filt$confusion_uih[[idx]]$table})
+uih_conf_indicies <- which(model_log$lead == lead & !is.na(model_log$confusion_uih))
+lapply(uih_conf_indicies, function(idx) {model_log$confusion_uih[[idx]]$table})
 
-lapply(uih_conf_indicies, function(idx) {filt$confusion_uih[[idx]]$matrix[,7]})
+lapply(uih_conf_indicies, function(idx) {model_log$confusion_uih[[idx]]$matrix[,7]})
 
 conf_indicies <- which(model_log$lead == lead & !is.na(filt$confusion))
 lapply(conf_indicies, function(idx) {filt$confusion[[idx]]$table})
@@ -147,8 +148,9 @@ lapply(conf_indicies, function(idx) {filt$confusion[[idx]]$table})
 source('annotator_prep_functions.R')
 load('../models/model_log.RData')
 ecgs <- generate_ecgs(20,'sinus')
-lead <- 6
+# lead <- 5
 ecgs_top <- predict_ecgs(ecgs,lead=lead)
+ecgs_new <- predict_ecgs(ecgs,lead=lead,model_number = 916)
 leads <- c('I','II','III','AVR','AVL','AVF','V1','V2','V3','V4','V5','V6')
 idx=0
 
@@ -156,8 +158,8 @@ idx <- idx+1
 sig <- c(ecg_filter(ecgs_top[[idx]]$signal[[leads[lead]]]))
 plot_func2(sig,ann_wfdb2continuous2(ecgs_top[[idx]]$annotation[[leads[lead]]]),linewidth = 0.5,pointsize = 0.5)
 Sys.sleep(1)
-# plot_func2(sig,ann_wfdb2continuous2(ecgs_new[[idx]]$annotation[[leads[lead]]]),linewidth = 0.5,pointsize = 0.5)
-Sys.sleep(1)
-plot_func2(sig,ann_wfdb2continuous2(ecgs[[idx]]$annotation),linewidth = 0.5,pointsize = 0.5)
+plot_func2(sig,ann_wfdb2continuous2(ecgs_new[[idx]]$annotation[[leads[lead]]]),linewidth = 0.5,pointsize = 0.5)
+# Sys.sleep(1)
+# plot_func2(sig,ann_wfdb2continuous2(ecgs[[idx]]$annotation),linewidth = 0.5,pointsize = 0.5)
 # plot_func2(sig,ann_wfdb2continuous2(ecgs_new2[[idx]]$annotation[[leads[lead]]]),linewidth = 0.5,pointsize = 0.5)
 
